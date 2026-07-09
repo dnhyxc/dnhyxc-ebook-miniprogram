@@ -1,0 +1,7 @@
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+if [ -n "$STAGED" ]; then
+  pnpm exec prettier --write --ignore-unknown $STAGED
+fi
+pnpm run type-check
+pnpm exec biome lint --staged --write --error-on-warnings --no-errors-on-unmatched --files-ignore-unknown=true
+git update-index --again
