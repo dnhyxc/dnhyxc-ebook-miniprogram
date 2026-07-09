@@ -13,4 +13,8 @@ onHide(() => {
   console.log("App Hide");
 });
 </script>
-<style></style>
+
+<style lang="scss">
+@use "@wot-ui/ui/styles/theme/index.scss" as *;
+@use "@/theme/variables.scss" as *;
+</style>

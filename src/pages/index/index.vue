@@ -1,42 +1,66 @@
 <template>
-  <view class="content">
-    <image class="logo" src="/static/logo.png" />
-    <view class="text-area">
-      <text class="title">{{ title }}</text>
+  <wd-config-provider :theme="theme">
+    <view class="page">
+      <image class="logo" src="/static/logo.png" />
+
+      <view class="section">
+        <text class="section-title">全局主题按钮</text>
+        <wd-button type="primary" block>Primary</wd-button>
+        <wd-button type="success" block>Success</wd-button>
+      </view>
+
+      <view class="section">
+        <text class="section-title">局部主题（ConfigProvider）</text>
+        <wd-config-provider :theme-vars="accentThemeVars">
+          <wd-button type="primary" block>局部绿色主题</wd-button>
+        </wd-config-provider>
+      </view>
+
+      <view class="section">
+        <wd-button plain block @click="toggleTheme()">
+          切换 {{ theme === "light" ? "深色" : "浅色" }}模式
+        </wd-button>
+      </view>
     </view>
-  </view>
+  </wd-config-provider>
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import type { ConfigProviderThemeVars } from "@wot-ui/ui";
+import { reactive } from "vue";
+import { useTheme } from "@/composables/useTheme";
 
-const title = ref("Hello dnhyxc");
+const { theme, toggleTheme } = useTheme();
+
+const accentThemeVars = reactive<ConfigProviderThemeVars>({
+  buttonPrimaryBg: "#07c160",
+  buttonPrimaryColor: "#ffffff",
+});
 </script>
 
-<style>
-.content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+<style scoped>
+.page {
+  min-height: 100vh;
+  padding: 48rpx 32rpx 64rpx;
+  box-sizing: border-box;
 }
 
 .logo {
-  height: 200rpx;
+  display: block;
   width: 200rpx;
-  margin-top: 200rpx;
-  margin-left: auto;
-  margin-right: auto;
-  margin-bottom: 50rpx;
+  height: 200rpx;
+  margin: 80rpx auto 48rpx;
 }
 
-.text-area {
+.section {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  gap: 24rpx;
+  margin-bottom: 40rpx;
 }
 
-.title {
-  font-size: 36rpx;
-  color: #8f8f94;
+.section-title {
+  font-size: 28rpx;
+  color: #666;
 }
 </style>

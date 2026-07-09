@@ -1,0 +1,20 @@
+@mixin app-theme-vars {
+  /* 语义变量：影响所有引用 primary 色阶的组件 */
+  --wot-primary-5: #4096ff;
+  --wot-primary-6: #1677ff;
+  --wot-primary-7: #0958d9;
+
+  /* 组件变量：直接控制按钮等组件（优先级高于语义变量） */
+  --wot-button-primary-bg: var(--wot-primary-6);
+  --wot-button-primary-bg-active: var(--wot-primary-7);
+
+  --wot-text-main: #1d1f29;
+  --wot-text-secondary: #4e5369;
+  --wot-border-main: #e5e6eb;
+  --wot-filled-bottom: #f7f8fa;
+}
+
+page,
+.wd-root-portal {
+  @include app-theme-vars();
+}
