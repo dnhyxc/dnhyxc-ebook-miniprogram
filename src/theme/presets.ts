@@ -1,41 +1,44 @@
 import type { ConfigProviderThemeVars } from "@wot-ui/ui";
 
+/**
+ * 十套中式传统色 UI 主题
+ * 数据源：中式传统色彩10套UI配色方案.md / 中式传统色彩UI配色方案.md / chinese-color-10themes.html
+ */
 export type BackgroundThemeId =
-  | "moonlight"
-  | "willow"
-  | "ink"
-  | "qingdai"
-  | "zhehuang"
-  | "shuise"
-  | "qingbai"
-  | "ciqing"
-  | "zhizi"
-  | "wuxinlv"
-  | "zhushi"
-  | "chase"
-  | "shanhuzhu"
-  | "liaoqing"
-  | "haitianxia";
+  | "cuiwei"
+  | "dongfang"
+  | "xuantian"
+  | "shiyangjin"
+  | "shanhu"
+  | "chayun"
+  | "qinglian"
+  | "taiqing"
+  | "liuli"
+  | "moyun";
 
-interface TextColors {
-  main: string;
-  secondary: string;
-  auxiliary: string;
-}
-
-interface ThemeAccent {
-  primary6: string;
-  primary7: string;
-  buttonBg: string;
-  buttonBgActive: string;
-  successBg: string;
-  successBgActive: string;
-  buttonMainColor: string;
+interface ThemePalette {
+  bgPage: string;
+  bgCard: string;
+  bgElevated: string;
+  inkPrimary: string;
+  inkSecondary: string;
+  inkTertiary: string;
+  primary: string;
+  primaryHover: string;
+  accent: string;
+  accentHover: string;
+  accentText: string;
+  success: string;
+  warning: string;
+  danger: string;
+  info: string;
+  border: string;
 }
 
 export interface BackgroundThemePreset {
   id: BackgroundThemeId;
   name: string;
+  subtitle: string;
   color: string;
   mode: "light" | "dark";
   themeVars: ConfigProviderThemeVars;
@@ -63,313 +66,268 @@ function hexToRgb(hex: string) {
   };
 }
 
-/** ponytail: 相对亮度阈值，足够覆盖主题色块对比度 */
-function relativeLuminance(hex: string) {
-  const { r, g, b } = hexToRgb(hex);
-  return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+function pickOnColor(bg: string) {
+  const { r, g, b } = hexToRgb(bg);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.55 ? "#2e201d" : "#ffffff";
 }
 
-function pickButtonMainColor(...backgrounds: string[]) {
-  const darkest = Math.min(...backgrounds.map(relativeLuminance));
-  return darkest > 0.55 ? "#2c2c2c" : "#ffffff";
+function darkenHex(hex: string, amount = 0.12) {
+  const { r, g, b } = hexToRgb(hex);
+  const factor = 1 - amount;
+  const channel = (value: number) =>
+    Math.max(0, Math.min(255, Math.round(value * factor)))
+      .toString(16)
+      .padStart(2, "0");
+  return `#${channel(r)}${channel(g)}${channel(b)}`;
 }
 
 function createTheme(
   id: BackgroundThemeId,
   name: string,
-  bg: string,
+  subtitle: string,
   mode: "light" | "dark",
-  text: TextColors,
-  surface: { oppo: string; content: string; border: string },
-  accent: ThemeAccent,
+  palette: ThemePalette,
 ): BackgroundThemePreset {
+  const successActive = darkenHex(palette.success);
+  const warningActive = darkenHex(palette.warning);
+  const dangerActive = darkenHex(palette.danger);
+  const infoActive = darkenHex(palette.info);
+
   return {
     id,
     name,
-    color: bg,
+    subtitle,
+    color: palette.bgPage,
     mode,
     themeVars: {
-      filledBottom: bg,
-      filledOppo: surface.oppo,
-      filledContent: surface.content,
-      textMain: text.main,
-      textSecondary: text.secondary,
-      textAuxiliary: text.auxiliary,
-      borderMain: surface.border,
-      primary6: accent.primary6,
-      primary7: accent.primary7,
-      buttonPrimaryBg: accent.buttonBg,
-      buttonPrimaryBgActive: accent.buttonBgActive,
-      buttonPrimaryColor: accent.buttonBg,
-      buttonPrimaryColorActive: accent.buttonBgActive,
-      buttonMainColor: accent.buttonMainColor,
-      buttonSuccessBg: accent.successBg,
-      buttonSuccessBgActive: accent.successBgActive,
-      buttonSuccessColor: accent.successBg,
-      buttonSuccessColorActive: accent.successBgActive,
-      successMain: accent.successBg,
-      successClicked: accent.successBgActive,
+      filledBottom: palette.bgPage,
+      filledOppo: palette.bgElevated,
+      filledContent: palette.bgCard,
+      textMain: palette.inkPrimary,
+      textSecondary: palette.inkSecondary,
+      textAuxiliary: palette.inkTertiary,
+      borderMain: palette.border,
+      primary6: palette.inkPrimary,
+      primary7: palette.inkSecondary,
+      buttonPrimaryBg: palette.accent,
+      buttonPrimaryBgActive: palette.accentHover,
+      buttonPrimaryColor: palette.accent,
+      buttonPrimaryColorActive: palette.accentHover,
+      buttonMainColor: palette.accentText,
+      buttonSuccessBg: palette.success,
+      buttonSuccessBgActive: successActive,
+      buttonSuccessColor: palette.success,
+      buttonSuccessColorActive: successActive,
+      successMain: palette.success,
+      successClicked: successActive,
+      buttonWarningBg: palette.warning,
+      buttonWarningBgActive: warningActive,
+      buttonWarningColor: palette.warning,
+      buttonWarningColorActive: warningActive,
+      warningMain: palette.warning,
+      warningClicked: warningActive,
+      buttonDangerBg: palette.danger,
+      buttonDangerBgActive: dangerActive,
+      buttonDangerColor: palette.danger,
+      buttonDangerColorActive: dangerActive,
+      dangerMain: palette.danger,
+      dangerClicked: dangerActive,
+      buttonInfoBg: palette.info,
+      buttonInfoBgActive: infoActive,
+      buttonInfoColor: pickOnColor(palette.info),
+      buttonInfoColorActive: pickOnColor(infoActive),
     },
     pageChrome: {
       frontColor: mode === "light" ? "#000000" : "#ffffff",
-      backgroundColor: bg,
-      backgroundColorTop: bg,
-      backgroundColorBottom: bg,
+      backgroundColor: palette.bgPage,
+      backgroundColorTop: palette.bgPage,
+      backgroundColorBottom: palette.bgPage,
     },
-  };
-}
-
-/** 选中色跟随文字色系；Primary / Success 各两档深浅，且彼此可区分 */
-function themeAccent(
-  text: TextColors,
-  buttonBg: string,
-  buttonBgActive: string,
-  successBg: string,
-  successBgActive: string,
-): ThemeAccent {
-  return {
-    primary6: text.main,
-    primary7: text.secondary,
-    buttonBg,
-    buttonBgActive,
-    successBg,
-    successBgActive,
-    buttonMainColor: pickButtonMainColor(buttonBg, successBg),
   };
 }
 
 export const backgroundThemePresets: Record<BackgroundThemeId, BackgroundThemePreset> = {
-  moonlight: createTheme(
-    "moonlight",
-    "月光",
-    "#f5f5f5",
-    "light",
-    { main: "#3d3d3d", secondary: "#666666", auxiliary: "#999999" },
-    { oppo: "#ffffff", content: "#ffffff", border: "#d8d8d8" },
-    // 主题主色调搭配说明:
-    // text: 主文字色(main)、次文字色(secondary)、辅助文字色(auxiliary)
-    // buttonBg: 主要按钮背景色（正常态）
-    // buttonBgActive: 主要按钮背景色（点击态/高亮）
-    // successBg: “成功”相关元素的主色（正常态，和主色系有区分）
-    // successBgActive: “成功”状态的深色或高亮色
-    themeAccent(
-      { main: "#3d3d3d", secondary: "#666666", auxiliary: "#999999" }, // 文字主色/次色/辅助色
-      "#3d3d3d", // 按钮主色（正常）— 深灰，与 #f5f5f5 背景对比清晰
-      "#2c2c2c", // 按钮主色（点击/高亮）
-      "#666666", // 成功状态主色（正常）— 中灰，与 Primary 区分
-      "#4d4d4d", // 成功状态主色（高亮/点击）
-    ),
-  ),
-  willow: createTheme(
-    "willow",
-    "柳绿",
-    "#83ad28",
-    "dark",
-    { main: "#ffffff", secondary: "#eef5e6", auxiliary: "#d4e8b8" },
-    { oppo: "#759f24", content: "#8fb82e", border: "#6b921f" },
-    themeAccent(
-      { main: "#ffffff", secondary: "#eef5e6", auxiliary: "#d4e8b8" },
-      "#1c2d25",
-      "#0f1814",
-      "#4a6614",
-      "#3a5210",
-    ),
-  ),
-  ink: createTheme(
-    "ink",
-    "墨绿",
-    "#1c2d25",
-    "dark",
-    { main: "#e8efe6", secondary: "#b4c2b8", auxiliary: "#8a9a8f" },
-    { oppo: "#243830", content: "#243830", border: "#2a4238" },
-    themeAccent(
-      { main: "#e8efe6", secondary: "#b4c2b8", auxiliary: "#8a9a8f" },
-      "#357a72",
-      "#2a635c",
-      "#4a6258",
-      "#3d5248",
-    ),
-  ),
-  qingdai: createTheme(
-    "qingdai",
-    "青黛",
-    "#43465f",
-    "dark",
-    { main: "#e8e9ef", secondary: "#c2c4ce", auxiliary: "#9498a8" },
-    { oppo: "#3a3d52", content: "#4a4d62", border: "#565972" },
-    themeAccent(
-      { main: "#e8e9ef", secondary: "#c2c4ce", auxiliary: "#9498a8" },
-      "#6a6d82",
-      "#565972",
-      "#4a4d62",
-      "#3a3d52",
-    ),
-  ),
-  zhehuang: createTheme(
-    "zhehuang",
-    "柘黄",
-    "#e4152b",
-    "dark",
-    { main: "#ffffff", secondary: "#ffe5e8", auxiliary: "#ffb8c0" },
-    { oppo: "#c91226", content: "#d41428", border: "#a80f1f" },
-    themeAccent(
-      { main: "#ffffff", secondary: "#ffe5e8", auxiliary: "#ffb8c0" },
-      "#a80f1f",
-      "#8a0c19",
-      "#c91226",
-      "#a80f1f",
-    ),
-  ),
-  shuise: createTheme(
-    "shuise",
-    "水色",
-    "#75878a",
-    "dark",
-    { main: "#f5f8f9", secondary: "#d8e0e2", auxiliary: "#b0bec2" },
-    { oppo: "#667a7d", content: "#6d8184", border: "#5a6e71" },
-    themeAccent(
-      { main: "#f5f8f9", secondary: "#d8e0e2", auxiliary: "#b0bec2" },
-      "#4a5c5f",
-      "#3a4a4d",
-      "#6d8184",
-      "#5a6e71",
-    ),
-  ),
-  qingbai: createTheme(
-    "qingbai",
-    "清白",
-    "#cac9be",
-    "light",
-    { main: "#2c2b28", secondary: "#4a4944", auxiliary: "#6d6c65" },
-    { oppo: "#deddd4", content: "#e8e7de", border: "#989788" },
-    themeAccent(
-      { main: "#2c2b28", secondary: "#4a4944", auxiliary: "#6d6c65" },
-      "#2c2b28",
-      "#1a1918",
-      "#6d6c65",
-      "#4a4944",
-    ),
-  ),
-  ciqing: createTheme(
-    "ciqing",
-    "瓷青",
-    "#afdde0",
-    "light",
-    { main: "#1a3a3d", secondary: "#3d5c5f", auxiliary: "#5a787b" },
-    { oppo: "#9dd0d3", content: "#b8e8eb", border: "#6eb3b8" },
-    themeAccent(
-      { main: "#1a3a3d", secondary: "#3d5c5f", auxiliary: "#5a787b" },
-      "#1a3a3d",
-      "#0f2528",
-      "#5a787b",
-      "#3d5c5f",
-    ),
-  ),
-  zhizi: createTheme(
-    "zhizi",
-    "栀子",
-    "#fdd876",
-    "light",
-    { main: "#4a3f10", secondary: "#6d5f20", auxiliary: "#8a7830" },
-    { oppo: "#fceb9a", content: "#fef0b0", border: "#e8c860" },
-    themeAccent(
-      { main: "#4a3f10", secondary: "#6d5f20", auxiliary: "#8a7830" },
-      "#4a3f10",
-      "#3a3210",
-      "#c99820",
-      "#a87a18",
-    ),
-  ),
-  wuxinlv: createTheme(
-    "wuxinlv",
-    "无心绿",
-    "#bfd1b2",
-    "light",
-    { main: "#2a3d22", secondary: "#455a3a", auxiliary: "#5f7552" },
-    { oppo: "#afc5a4", content: "#d0e0c8", border: "#8fab82" },
-    themeAccent(
-      { main: "#2a3d22", secondary: "#455a3a", auxiliary: "#5f7552" },
-      "#2a3d22",
-      "#1a2818",
-      "#5f7552",
-      "#455a3a",
-    ),
-  ),
-  zhushi: createTheme(
-    "zhushi",
-    "朱柿",
-    "#dc541b",
-    "dark",
-    { main: "#ffffff", secondary: "#ffe8dc", auxiliary: "#ffccb8" },
-    { oppo: "#c44a18", content: "#e05e28", border: "#a83e12" },
-    themeAccent(
-      { main: "#ffffff", secondary: "#ffe8dc", auxiliary: "#ffccb8" },
-      "#a83e12",
-      "#8a3210",
-      "#c44a18",
-      "#a83e12",
-    ),
-  ),
-  chase: createTheme(
-    "chase",
-    "茶色",
-    "#b3b37a",
-    "light",
-    { main: "#2a2a1a", secondary: "#454530", auxiliary: "#606048" },
-    { oppo: "#a3a368", content: "#c4c490", border: "#939360" },
-    themeAccent(
-      { main: "#2a2a1a", secondary: "#454530", auxiliary: "#606048" },
-      "#2a2a1a",
-      "#1a1a10",
-      "#606048",
-      "#454530",
-    ),
-  ),
-  shanhuzhu: createTheme(
-    "shanhuzhu",
-    "珊瑚珠",
-    "#bb5148",
-    "dark",
-    { main: "#ffffff", secondary: "#ffe8e6", auxiliary: "#ffc8c4" },
-    { oppo: "#a84840", content: "#c86058", border: "#943e38" },
-    themeAccent(
-      { main: "#ffffff", secondary: "#ffe8e6", auxiliary: "#ffc8c4" },
-      "#943e38",
-      "#7a322e",
-      "#a84840",
-      "#943e38",
-    ),
-  ),
-  liaoqing: createTheme(
-    "liaoqing",
-    "蓼青",
-    "#479f94",
-    "dark",
-    { main: "#ffffff", secondary: "#dff5f2", auxiliary: "#b8e8e0" },
-    { oppo: "#3d8f84", content: "#52aba0", border: "#357a72" },
-    themeAccent(
-      { main: "#ffffff", secondary: "#dff5f2", auxiliary: "#b8e8e0" },
-      "#2a635c",
-      "#1f4f48",
-      "#357a72",
-      "#2a635c",
-    ),
-  ),
-  haitianxia: createTheme(
-    "haitianxia",
-    "海天霞",
-    "#9d8b8e",
-    "dark",
-    { main: "#ffffff", secondary: "#f5eef0", auxiliary: "#e0d4d6" },
-    { oppo: "#8a787b", content: "#a8999c", border: "#7a686b" },
-    themeAccent(
-      { main: "#ffffff", secondary: "#f5eef0", auxiliary: "#e0d4d6" },
-      "#685658",
-      "#554648",
-      "#7a686b",
-      "#685658",
-    ),
-  ),
+  cuiwei: createTheme("cuiwei", "翠微新绿", "自然清新", "light", {
+    bgPage: "#bfd1b2",
+    bgCard: "#c1e2cf",
+    bgElevated: "#d4ebdf",
+    inkPrimary: "#2e201d",
+    inkSecondary: "#4a4548",
+    inkTertiary: "#576470",
+    primary: "#1c2d29",
+    primaryHover: "#2a4540",
+    accent: "#dc541b",
+    accentHover: "#c44a18",
+    accentText: "#ffffff",
+    success: "#83ad28",
+    warning: "#edac5d",
+    danger: "#d64241",
+    info: "#5b8b71",
+    border: "#93bdad",
+  }),
+  dongfang: createTheme("dongfang", "东方既白", "清雅蓝调", "light", {
+    bgPage: "#d3e5ef",
+    bgCard: "#afdde0",
+    bgElevated: "#c5e5e8",
+    inkPrimary: "#2e201d",
+    inkSecondary: "#576470",
+    inkTertiary: "#75878a",
+    primary: "#16304b",
+    primaryHover: "#234a6f",
+    accent: "#c36f4d",
+    accentHover: "#a85e40",
+    accentText: "#ffffff",
+    success: "#479f94",
+    warning: "#e5a84b",
+    danger: "#d11313",
+    info: "#277d93",
+    border: "#75878a",
+  }),
+  xuantian: createTheme("xuantian", "玄天黑土", "暗色高雅", "dark", {
+    bgPage: "#2e201d",
+    bgCard: "#4a4548",
+    bgElevated: "#5a5558",
+    inkPrimary: "#cac9be",
+    inkSecondary: "#b2b6b6",
+    inkTertiary: "#9b9690",
+    primary: "#cac9be",
+    primaryHover: "#dddcd0",
+    accent: "#e4a01d",
+    accentHover: "#c48a18",
+    accentText: "#2e201d",
+    success: "#5b8b71",
+    warning: "#edac5d",
+    danger: "#a55d51",
+    info: "#576470",
+    border: "#4a4548",
+  }),
+  shiyangjin: createTheme("shiyangjin", "十樣錦", "暖调雅致", "light", {
+    bgPage: "#cac9be",
+    bgCard: "#b2b6b6",
+    bgElevated: "#c4c8c8",
+    inkPrimary: "#2e201d",
+    inkSecondary: "#4a4548",
+    inkTertiary: "#9d8b8e",
+    primary: "#2e201d",
+    primaryHover: "#4a3632",
+    accent: "#af231c",
+    accentHover: "#8f1c16",
+    accentText: "#ffffff",
+    success: "#3c5840",
+    warning: "#e4a01d",
+    danger: "#d11313",
+    info: "#af6f60",
+    border: "#9b9690",
+  }),
+  shanhu: createTheme("shanhu", "珊瑚暖阳", "热情活泼", "light", {
+    bgPage: "#f8c6b5",
+    bgCard: "#d3e5ef",
+    bgElevated: "#ede0d6",
+    inkPrimary: "#2e201d",
+    inkSecondary: "#4a4548",
+    inkTertiary: "#9d8b8e",
+    primary: "#8d373b",
+    primaryHover: "#6b2c2f",
+    accent: "#bb5148",
+    accentHover: "#9e443d",
+    accentText: "#ffffff",
+    success: "#479f94",
+    warning: "#e5a84b",
+    danger: "#d11313",
+    info: "#277d93",
+    border: "#9b9690",
+  }),
+  chayun: createTheme("chayun", "茶韵清烟", "文艺素雅", "light", {
+    bgPage: "#b3b37a",
+    bgCard: "#bfd1b2",
+    bgElevated: "#d0d4a0",
+    inkPrimary: "#2e201d",
+    inkSecondary: "#4a4548",
+    inkTertiary: "#8c4f35",
+    primary: "#1c2d25",
+    primaryHover: "#2a4538",
+    accent: "#8c4f35",
+    accentHover: "#734230",
+    accentText: "#ffffff",
+    success: "#5b8b71",
+    warning: "#e5a84b",
+    danger: "#d64241",
+    info: "#475c4e",
+    border: "#93bdad",
+  }),
+  qinglian: createTheme("qinglian", "青蓮暮色", "神秘优雅", "light", {
+    bgPage: "#cac9be",
+    bgCard: "#a59aca",
+    bgElevated: "#b8b7d4",
+    inkPrimary: "#2e201d",
+    inkSecondary: "#43465f",
+    inkTertiary: "#75878a",
+    primary: "#43465f",
+    primaryHover: "#5a5d7a",
+    accent: "#7b5aa3",
+    accentHover: "#654a87",
+    accentText: "#ffffff",
+    success: "#5b8b71",
+    warning: "#edac5d",
+    danger: "#d64241",
+    info: "#277d93",
+    border: "#75878a",
+  }),
+  taiqing: createTheme("taiqing", "苔青幽谷", "深沉静谧", "light", {
+    bgPage: "#cac9be",
+    bgCard: "#b3b37a",
+    bgElevated: "#c4c4a0",
+    inkPrimary: "#2e201d",
+    inkSecondary: "#475c4e",
+    inkTertiary: "#576470",
+    primary: "#1c2d29",
+    primaryHover: "#2a4540",
+    accent: "#06786a",
+    accentHover: "#055e54",
+    accentText: "#ffffff",
+    success: "#83ad28",
+    warning: "#e5a84b",
+    danger: "#d64241",
+    info: "#475c4e",
+    border: "#93bdad",
+  }),
+  liuli: createTheme("liuli", "琉璃金辉", "华丽富贵", "light", {
+    bgPage: "#fdd876",
+    bgCard: "#edac5d",
+    bgElevated: "#f5e4a0",
+    inkPrimary: "#2e201d",
+    inkSecondary: "#576470",
+    inkTertiary: "#8c4f35",
+    primary: "#8c4f35",
+    primaryHover: "#6b3d2a",
+    accent: "#e4a01d",
+    accentHover: "#c48a18",
+    accentText: "#2e201d",
+    success: "#479f94",
+    warning: "#8c4f35",
+    danger: "#d11313",
+    info: "#af6f60",
+    border: "#b5906b",
+  }),
+  moyun: createTheme("moyun", "墨韵书香", "沉稳典雅", "dark", {
+    bgPage: "#131824",
+    bgCard: "#1c2d29",
+    bgElevated: "#2a3f39",
+    inkPrimary: "#d3e5ef",
+    inkSecondary: "#93bdad",
+    inkTertiary: "#75878a",
+    primary: "#d3e5ef",
+    primaryHover: "#afdde0",
+    accent: "#dc541b",
+    accentHover: "#c44a18",
+    accentText: "#ffffff",
+    success: "#83ad28",
+    warning: "#edac5d",
+    danger: "#d11313",
+    info: "#0f6b99",
+    border: "#3a3c5b",
+  }),
 };
 
 export const backgroundThemeOptions = Object.values(backgroundThemePresets);

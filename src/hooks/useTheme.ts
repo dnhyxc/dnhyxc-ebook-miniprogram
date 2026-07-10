@@ -12,7 +12,7 @@ const STORAGE_KEY = "background-theme-id";
 function getStoredThemeId(): BackgroundThemeId {
   const stored = uni.getStorageSync(STORAGE_KEY) as BackgroundThemeId | "";
   if (stored && stored in backgroundThemePresets) return stored;
-  return "moonlight";
+  return "cuiwei";
 }
 
 // ponytail: 模块级状态，保证各 Tab 页背景主题同步

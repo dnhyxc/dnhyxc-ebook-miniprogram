@@ -13,6 +13,7 @@
           <view v-if="backgroundThemeId === item.id" class="theme-check" />
         </view>
         <text class="theme-name">{{ item.name }}</text>
+        <text v-if="backgroundThemeId === item.id" class="theme-subtitle">{{ item.subtitle }}</text>
       </view>
     </view>
   </view>
@@ -86,5 +87,10 @@ const { backgroundThemeId, backgroundThemeOptions, setBackgroundTheme } = useThe
 .theme-name {
   font-size: 24rpx;
   color: var(--wot-text-auxiliary);
+}
+
+.theme-subtitle {
+  font-size: 20rpx;
+  color: var(--wot-text-secondary);
 }
 </style>

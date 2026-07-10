@@ -10,13 +10,9 @@
             <text class="section-title">全局主题按钮</text>
             <wd-button type="primary" block>Primary</wd-button>
             <wd-button type="success" block>Success</wd-button>
-          </view>
-
-          <view class="section">
-            <text class="section-title">局部主题（ConfigProvider）</text>
-            <wd-config-provider :theme-vars="accentThemeVars">
-              <wd-button type="primary" block>局部同色系按钮</wd-button>
-            </wd-config-provider>
+            <wd-button type="warning" block>Warning</wd-button>
+            <wd-button type="danger" block>Danger</wd-button>
+            <wd-button type="info" block>Info</wd-button>
           </view>
         </view>
       </scroll-view>
@@ -27,23 +23,9 @@
 </template>
 
 <script setup lang="ts">
-import type { ConfigProviderThemeVars } from "@wot-ui/ui";
-import { computed } from "vue";
 import { useTheme } from "@/hooks/useTheme";
 
 const { theme, themeVars, pageShellStyle, themeRootStyle } = useTheme();
-
-const accentThemeVars = computed<ConfigProviderThemeVars>(() => ({
-  buttonPrimaryBg: themeVars.value.buttonPrimaryBgActive,
-  buttonPrimaryBgActive: themeVars.value.buttonPrimaryBg,
-  buttonPrimaryColor: themeVars.value.buttonPrimaryBgActive,
-  buttonPrimaryColorActive: themeVars.value.buttonPrimaryBg,
-  buttonMainColor: themeVars.value.buttonMainColor,
-  buttonSuccessBg: themeVars.value.buttonSuccessBgActive,
-  buttonSuccessBgActive: themeVars.value.buttonSuccessBg,
-  buttonSuccessColor: themeVars.value.buttonSuccessBgActive,
-  buttonSuccessColorActive: themeVars.value.buttonSuccessBg,
-}));
 </script>
 
 <style scoped>
