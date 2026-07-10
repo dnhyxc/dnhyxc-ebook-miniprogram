@@ -1,47 +1,66 @@
 <template>
-  <wd-config-provider :theme="theme">
-    <view class="page">
-      <image class="logo" src="/static/logo.png" />
+  <wd-config-provider :theme="theme" :theme-vars="themeVars" :custom-style="themeRootStyle">
+    <view class="page-container" :style="pageShellStyle">
+      <AppNavbar title="首页" />
+      <scroll-view scroll-y class="page-scroll">
+        <view class="page">
+          <image class="logo" src="/static/logo.png" />
 
-      <view class="section">
-        <text class="section-title">全局主题按钮</text>
-        <wd-button type="primary" block>Primary</wd-button>
-        <wd-button type="success" block>Success</wd-button>
-      </view>
+          <view class="section">
+            <text class="section-title">全局主题按钮</text>
+            <wd-button type="primary" block>Primary</wd-button>
+            <wd-button type="success" block>Success</wd-button>
+          </view>
 
-      <view class="section">
-        <text class="section-title">局部主题（ConfigProvider）</text>
-        <wd-config-provider :theme-vars="accentThemeVars">
-          <wd-button type="primary" block>局部绿色主题</wd-button>
-        </wd-config-provider>
-      </view>
+          <view class="section">
+            <text class="section-title">局部主题（ConfigProvider）</text>
+            <wd-config-provider :theme-vars="accentThemeVars">
+              <wd-button type="primary" block>局部同色系按钮</wd-button>
+            </wd-config-provider>
+          </view>
+        </view>
+      </scroll-view>
 
-      <view class="section">
-        <wd-button plain block @click="toggleTheme()">
-          切换 {{ theme === "light" ? "深色" : "浅色" }}模式
-        </wd-button>
-      </view>
+      <AppTabbar />
     </view>
   </wd-config-provider>
 </template>
 
 <script setup lang="ts">
 import type { ConfigProviderThemeVars } from "@wot-ui/ui";
-import { reactive } from "vue";
-import { useTheme } from "@/composables/useTheme";
+import { computed } from "vue";
+import { useTheme } from "@/hooks/useTheme";
 
-const { theme, toggleTheme } = useTheme();
+const { theme, themeVars, pageShellStyle, themeRootStyle } = useTheme();
 
-const accentThemeVars = reactive<ConfigProviderThemeVars>({
-  buttonPrimaryBg: "#07c160",
-  buttonPrimaryColor: "#ffffff",
-});
+const accentThemeVars = computed<ConfigProviderThemeVars>(() => ({
+  buttonPrimaryBg: themeVars.value.buttonPrimaryBgActive,
+  buttonPrimaryBgActive: themeVars.value.buttonPrimaryBg,
+  buttonPrimaryColor: themeVars.value.buttonPrimaryBgActive,
+  buttonPrimaryColorActive: themeVars.value.buttonPrimaryBg,
+  buttonMainColor: themeVars.value.buttonMainColor,
+  buttonSuccessBg: themeVars.value.buttonSuccessBgActive,
+  buttonSuccessBgActive: themeVars.value.buttonSuccessBg,
+  buttonSuccessColor: themeVars.value.buttonSuccessBgActive,
+  buttonSuccessColorActive: themeVars.value.buttonSuccessBg,
+}));
 </script>
 
 <style scoped>
+.page-container {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-scroll {
+  flex: 1;
+  height: 0;
+}
+
 .page {
-  min-height: 100vh;
-  padding: 48rpx 32rpx 64rpx;
+  min-height: 100%;
+  padding: 48rpx 32rpx calc(64rpx + var(--wot-tabbar-height) + env(safe-area-inset-bottom));
   box-sizing: border-box;
 }
 
@@ -61,6 +80,6 @@ const accentThemeVars = reactive<ConfigProviderThemeVars>({
 
 .section-title {
   font-size: 28rpx;
-  color: #666;
+  color: var(--wot-text-auxiliary);
 }
 </style>

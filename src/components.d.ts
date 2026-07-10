@@ -12,17 +12,33 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AppNavbar: typeof import('./components/AppNavbar.vue')['default']
+    AppTabbar: typeof import('./components/AppTabbar.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    ThemePicker: typeof import('./components/ThemePicker.vue')['default']
     WdButton: typeof import('@wot-ui/ui/components/wd-button/wd-button.vue')['WdButton']
+    WdCell: typeof import('@wot-ui/ui/components/wd-cell/wd-cell.vue')['WdCell']
+    WdCellGroup: typeof import('@wot-ui/ui/components/wd-cell-group/wd-cell-group.vue')['WdCellGroup']
     WdConfigProvider: typeof import('@wot-ui/ui/components/wd-config-provider/wd-config-provider.vue')['WdConfigProvider']
+    WdNavbar: typeof import('@wot-ui/ui/components/wd-navbar/wd-navbar.vue')['WdNavbar']
+    WdTabbar: typeof import('@wot-ui/ui/components/wd-tabbar/wd-tabbar.vue')['WdTabbar']
+    WdTabbarItem: typeof import('@wot-ui/ui/components/wd-tabbar-item/wd-tabbar-item.vue')['WdTabbarItem']
   }
 }
 
 // For TSX support
 declare global {
+  const AppNavbar: typeof import('./components/AppNavbar.vue')['default']
+  const AppTabbar: typeof import('./components/AppTabbar.vue')['default']
   const RouterLink: typeof import('vue-router')['RouterLink']
   const RouterView: typeof import('vue-router')['RouterView']
+  const ThemePicker: typeof import('./components/ThemePicker.vue')['default']
   const WdButton: typeof import('@wot-ui/ui/components/wd-button/wd-button.vue')['WdButton']
+  const WdCell: typeof import('@wot-ui/ui/components/wd-cell/wd-cell.vue')['WdCell']
+  const WdCellGroup: typeof import('@wot-ui/ui/components/wd-cell-group/wd-cell-group.vue')['WdCellGroup']
   const WdConfigProvider: typeof import('@wot-ui/ui/components/wd-config-provider/wd-config-provider.vue')['WdConfigProvider']
+  const WdNavbar: typeof import('@wot-ui/ui/components/wd-navbar/wd-navbar.vue')['WdNavbar']
+  const WdTabbar: typeof import('@wot-ui/ui/components/wd-tabbar/wd-tabbar.vue')['WdTabbar']
+  const WdTabbarItem: typeof import('@wot-ui/ui/components/wd-tabbar-item/wd-tabbar-item.vue')['WdTabbarItem']
 }

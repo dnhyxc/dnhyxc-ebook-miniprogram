@@ -1,16 +1,10 @@
 <script setup lang="ts">
-import { onHide, onLaunch, onShow } from "@dcloudio/uni-app";
+import { onLaunch } from "@dcloudio/uni-app";
+import { applyPageChrome } from "@/hooks/useTheme";
 
 onLaunch(() => {
-  console.log("App Launch");
-});
-
-onShow(() => {
-  console.log("App Show");
-});
-
-onHide(() => {
-  console.log("App Hide");
+  uni.hideTabBar({ animation: false });
+  applyPageChrome();
 });
 </script>
 
