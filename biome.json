@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!!**/dist", "!!**/components.d.ts"]
+    "includes": ["**", "!!**/dist", "!!**/node_modules", "!!**/components.d.ts"]
   },
   "formatter": {
     "enabled": false
@@ -32,7 +32,7 @@
     "enabled": true,
     "actions": {
       "source": {
-        "organizeImports": "on"
+        "organizeImports": "off"
       }
     }
   },

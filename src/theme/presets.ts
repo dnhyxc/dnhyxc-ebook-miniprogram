@@ -82,6 +82,11 @@ function darkenHex(hex: string, amount = 0.12) {
   return `#${channel(r)}${channel(g)}${channel(b)}`;
 }
 
+function rgbaHex(hex: string, alpha: number) {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function createTheme(
   id: BackgroundThemeId,
   name: string,
@@ -108,12 +113,16 @@ function createTheme(
       textSecondary: palette.inkSecondary,
       textAuxiliary: palette.inkTertiary,
       borderMain: palette.border,
+      borderLight: rgbaHex(palette.border, mode === "dark" ? 0.4 : 0.5),
+      dividerMain: rgbaHex(palette.border, 0.35),
+      dividerLight: rgbaHex(palette.border, 0.2),
       primary6: palette.inkPrimary,
       primary7: palette.inkSecondary,
       buttonPrimaryBg: palette.accent,
       buttonPrimaryBgActive: palette.accentHover,
       buttonPrimaryColor: palette.accent,
       buttonPrimaryColorActive: palette.accentHover,
+      buttonPrimarySoftBg: rgbaHex(palette.accent, mode === "dark" ? 0.15 : 0.12),
       buttonMainColor: palette.accentText,
       buttonSuccessBg: palette.success,
       buttonSuccessBgActive: successActive,
@@ -137,6 +146,9 @@ function createTheme(
       buttonInfoBgActive: infoActive,
       buttonInfoColor: pickOnColor(palette.info),
       buttonInfoColorActive: pickOnColor(infoActive),
+      tabbarBg: palette.bgPage,
+      tabbarItemColorActive: palette.inkPrimary,
+      tabbarItemColorInactive: palette.inkTertiary,
     },
     pageChrome: {
       frontColor: mode === "light" ? "#000000" : "#ffffff",

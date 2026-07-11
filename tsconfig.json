@@ -6,10 +6,18 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@wot-ui/ui/components/*": ["./src/types/wot-ui-component-stub.d.ts"]
     },
     "lib": ["esnext", "dom"],
     "types": ["@dcloudio/types"]
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue", "src/components.d.ts"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "src/**/*.tsx",
+    "src/**/*.vue",
+    "src/components.d.ts"
+  ],
+  "exclude": ["node_modules"]
 }

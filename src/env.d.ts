@@ -1,5 +1,15 @@
 /// <reference types="vite/client" />
 
+interface ImportMetaEnv {
+  readonly VITE_API_BASE_URL: string;
+  readonly VITE_MD5_KEY: string;
+  readonly VITE_MD5_IV_KEY: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+
 declare module "*.vue" {
   import { DefineComponent } from "vue";
 

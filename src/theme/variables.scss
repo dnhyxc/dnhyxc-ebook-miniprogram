@@ -2,6 +2,7 @@
   --wot-tabbar-height: 50px;
   --wot-tabbar-item-icon-size: 24px;
   --wot-tabbar-item-title-font-size: 12px;
+  --app-tabbar-inset: calc(var(--wot-tabbar-height) + env(safe-area-inset-bottom));
 }
 
 page,

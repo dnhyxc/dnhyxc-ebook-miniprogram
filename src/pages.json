@@ -1,17 +1,32 @@
 {
+  "easycom": {
+    "autoscan": true,
+    "custom": {
+      "^Vu(.*)": "/node_modules/vu-icons/dist/uniapp/Vu$1.vue"
+    }
+  },
   "pages": [
     {
-      "path": "pages/index/index",
+      "path": "pages/shelf/index",
       "style": {
         "navigationStyle": "custom",
-        "navigationBarTitleText": "首页"
+        "navigationBarTitleText": "书架",
+        "disableScroll": true
       }
     },
     {
       "path": "pages/mine/index",
       "style": {
         "navigationStyle": "custom",
-        "navigationBarTitleText": "我的"
+        "navigationBarTitleText": "我的",
+        "disableScroll": true
+      }
+    },
+    {
+      "path": "pages/reader/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "阅读"
       }
     },
     {
@@ -35,8 +50,8 @@
     "borderStyle": "black",
     "list": [
       {
-        "pagePath": "pages/index/index",
-        "text": "首页"
+        "pagePath": "pages/shelf/index",
+        "text": "书架"
       },
       {
         "pagePath": "pages/mine/index",

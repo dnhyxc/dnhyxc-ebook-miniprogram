@@ -1,19 +1,21 @@
 import { ref } from "vue";
 import { applyPageChrome } from "@/hooks/useTheme";
 
+import type { AppIconName } from "@/icons";
+
 export interface TabbarItem {
   name: string;
   title: string;
-  icon: string;
+  icon: AppIconName;
   pagePath: string;
 }
 
 export const tabbarItems: TabbarItem[] = [
   {
-    name: "index",
-    title: "首页",
-    icon: "home",
-    pagePath: "/pages/index/index",
+    name: "shelf",
+    title: "书架",
+    icon: "book-open",
+    pagePath: "/pages/shelf/index",
   },
   {
     name: "mine",

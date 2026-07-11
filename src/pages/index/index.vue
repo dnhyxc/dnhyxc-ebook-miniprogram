@@ -1,6 +1,6 @@
 <template>
   <wd-config-provider :theme="theme" :theme-vars="themeVars" :custom-style="themeRootStyle">
-    <view class="page-container" :style="pageShellStyle">
+    <view class="page-container with-tabbar" :style="pageShellStyle">
       <AppNavbar title="首页" />
       <scroll-view scroll-y class="page-scroll">
         <view class="page">
@@ -42,7 +42,7 @@ const { theme, themeVars, pageShellStyle, themeRootStyle } = useTheme();
 
 .page {
   min-height: 100%;
-  padding: 48rpx 32rpx calc(64rpx + var(--wot-tabbar-height) + env(safe-area-inset-bottom));
+  padding: 48rpx 32rpx 32rpx;
   box-sizing: border-box;
 }
 
