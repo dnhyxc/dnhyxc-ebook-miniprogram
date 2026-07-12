@@ -14,14 +14,16 @@
 
 ## 产品与后端
 
-| 文档                                                                   | 说明                                                                 |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| [phase1-epub-shelf-reader-plan.md](./phase1-epub-shelf-reader-plan.md) | **第一期**：书架 + EPUB 阅读（**方案 B**：后端章节 API + rich-text） |
-| [backend-ebook-chapter-api.md](./backend-ebook-chapter-api.md)         | 后端章节解析与 API 规范（`dnhyxc-ai` 实现）                          |
-| [wechat-local-setup.md](./wechat-local-setup.md)                       | 本地微信登录与 Web 账号关联                                          |
+| 文档                                                                   | 说明                                                                     |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| [epub-reader-implementation.md](./epub-reader-implementation.md)       | **EPUB 阅读实现说明**（方案 B：BullMQ 解析队列 + mp-html + 进度 + 重试） |
+| [phase1-epub-shelf-reader-plan.md](./phase1-epub-shelf-reader-plan.md) | **第一期**：书架 + EPUB 阅读（**方案 B**：后端章节 API + rich-text）     |
+| [backend-ebook-chapter-api.md](./backend-ebook-chapter-api.md)         | 后端章节解析与 API 规范（`dnhyxc-ai` 实现）                              |
+| [epub-rendering-implementation.md](./epub-rendering-implementation.md) | 方案选型、mp-html 集成与里程碑（设计参考）                               |
+| [wechat-local-setup.md](./wechat-local-setup.md)                       | 本地微信登录与 Web 账号关联                                              |
 
 ## 延伸阅读（主仓库 dnhyxc-ai）
 
 - [docs/ebook/README.md](https://github.com/dnhyxc/dnhyxc-ai/blob/main/docs/ebook/README.md) — Web 端电子书专题索引
 - [docs/ideas/wechat-miniprogram-epub-reader.md](https://github.com/dnhyxc/dnhyxc-ai/blob/main/docs/ideas/wechat-miniprogram-epub-reader.md) — 全功能小程序规划（听书/划线/想法等二期参考）
-- [apps/backend/specs/wechat-quick-login.md](https://github.com/dnhyxc/dnhyxc-ai/blob/main/apps/backend/specs/wechat-quick-login.md) — 后端微信登录 SPEC（待实现）
+- [docs/ebook/miniprogram-epub-server-parse.md](https://github.com/dnhyxc/dnhyxc-ai/blob/main/docs/ebook/miniprogram-epub-server-parse.md) — 后端 BullMQ 解析队列归档（逐行注释）

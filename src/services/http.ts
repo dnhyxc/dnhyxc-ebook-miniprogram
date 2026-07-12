@@ -20,6 +20,8 @@ interface RequestOptions {
   data?: unknown;
   /** 默认 true，带 Bearer */
   auth?: boolean;
+  /** 毫秒；章节解析等长请求可延长 */
+  timeout?: number;
 }
 
 interface ApiEnvelope<T> {
@@ -54,6 +56,7 @@ export function request<T>(options: RequestOptions): Promise<T> {
       url: `${API_BASE_URL}${options.url}`,
       method: options.method ?? "GET",
       data: options.data as UniApp.RequestOptions["data"],
+      timeout: options.timeout ?? 60000,
       header,
       success: (res) => {
         const status = res.statusCode;

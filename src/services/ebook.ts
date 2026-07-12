@@ -95,12 +95,16 @@ export async function fetchBook(bookId: string): Promise<BookDetail> {
 }
 
 export function fetchChapters(bookId: string) {
-  return request<ChaptersResponse>({ url: `/ebook/book/${bookId}/chapters` });
+  return request<ChaptersResponse>({
+    url: `/ebook/book/${bookId}/chapters`,
+    timeout: 120000,
+  });
 }
 
 export function fetchChapter(bookId: string, index: number) {
   return request<ChapterContent>({
     url: `/ebook/book/${bookId}/chapter/${index}`,
+    timeout: 120000,
   });
 }
 

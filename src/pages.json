@@ -2,7 +2,8 @@
   "easycom": {
     "autoscan": true,
     "custom": {
-      "^Vu(.*)": "/node_modules/vu-icons/dist/uniapp/Vu$1.vue"
+      "^Vu(.*)": "/node_modules/vu-icons/dist/uniapp/Vu$1.vue",
+      "^mp-html$": "mp-html/dist/uni-app/components/mp-html/mp-html"
     }
   },
   "pages": [
