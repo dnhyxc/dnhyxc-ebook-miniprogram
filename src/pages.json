@@ -27,7 +27,9 @@
       "path": "pages/reader/index",
       "style": {
         "navigationStyle": "custom",
-        "navigationBarTitleText": "阅读"
+        "navigationBarTitleText": "阅读",
+        "disableScroll": true,
+        "backgroundColor": "#ffffff"
       }
     },
     {

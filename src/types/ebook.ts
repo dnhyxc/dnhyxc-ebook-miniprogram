@@ -98,6 +98,31 @@ export interface SaveProgressPayload {
   scrollPercent?: number;
 }
 
+/** Web 端 percent 为 0–100，小程序为 0–1；>1 按百分比刻度归一 */
+export function toProgressRatio(percent: number): number {
+  if (!Number.isFinite(percent) || percent <= 0) return 0;
+  return percent > 1 ? percent / 100 : percent;
+}
+
+/** 恢复阅读起始章：优先 chapterIndex，否则按 percent 估算 */
+export function resolveStartChapterIndex(
+  progChapterIndex: number | undefined,
+  progPercent: number | undefined,
+  total: number,
+): number {
+  if (total <= 0) return 0;
+  if (progChapterIndex != null && progChapterIndex >= 0) {
+    return Math.min(progChapterIndex, total - 1);
+  }
+  if (progPercent != null) {
+    const ratio = toProgressRatio(progPercent);
+    if (ratio > 0) {
+      return Math.min(Math.floor(ratio * total), total - 1);
+    }
+  }
+  return 0;
+}
+
 /** 由章序与章内滚动比估算全书进度（无字数数据时） */
 export function estimatePercent(
   chapterIndex: number,
