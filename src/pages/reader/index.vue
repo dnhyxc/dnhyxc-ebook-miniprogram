@@ -43,25 +43,31 @@
         <view
           v-for="block in chapterBlocks"
           :id="`chapter-${block.index}`"
-          :key="`${block.index}-${mpRenderKey}`"
+          :key="block.index"
           class="chapter-block"
-          :style="readerStyle"
+          :style="chapterBlockStyle"
         >
           <view
             v-if="block.title"
             class="chapter-heading"
-            :style="{ fontSize: readerStyle.fontSize, color: readerStyle.color }"
+            :style="`font-size:${readerStyle.fontSize};color:${readerStyle.color}`"
           >
             {{ block.title }}
           </view>
           <mp-html
             v-if="mpHtmlMounted"
-            :ref="bindMpHtmlRef(block.index)"
-            :content="block.html"
-            :copy-link="false"
-            lazy-load
-            :tag-style="mpTagStyle"
+            :id="`mp-html-${block.index}`"
+            :content="block.html || ''"
             :container-style="containerStyle"
+            :tag-style="mpTagStyle"
+            :copy-link="false"
+            :lazy-load="true"
+            :domain="''"
+            :error-img="''"
+            :loading-img="''"
+            :scroll-table="false"
+            :selectable="false"
+            :use-anchor="false"
           />
         </view>
         <view v-if="loadingMore" class="stream-loading">
@@ -414,21 +420,29 @@ const tocSheetStyle = computed(() => ({
   color: readerStyle.value.color,
 }));
 
+const chapterBlockStyle = computed(() => {
+  const s = readerStyle.value;
+  return [
+    `background-color:${s.backgroundColor}`,
+    `color:${s.color}`,
+    `font-size:${s.fontSize}`,
+    `font-family:${s.fontFamily}`,
+    `line-height:${s.lineHeight}`,
+    `letter-spacing:${s.letterSpacing}`,
+  ].join(";");
+});
+
 const containerStyle = computed(
   () =>
     `font-size:${readerStyle.value.fontSize};color:${readerStyle.value.color} !important;line-height:${readerStyle.value.lineHeight};font-family:${readerStyle.value.fontFamily};text-align:justify;text-justify:inter-ideograph;text-align-last:left`,
 );
 
-// ponytail: 微信小程序上 mp-html 的 :key 换肤不可靠，靠 setContent 强制重解析
-const mpRenderKey = computed(
-  () => `${readerStyle.value.color}-${fontSize.value}-${lineHeight.value}`,
-);
+// ponytail: 换肤靠 setContent，不靠把主题塞进 v-for :key（会整表 remount）
 
 interface MpHtmlInstance {
   setContent?: (content: string, append?: boolean) => void;
 }
 
-const mpHtmlRefs = new Map<number, MpHtmlInstance>();
 const mpHtmlMounted = ref(true);
 
 function extractMpHtml(inst: unknown): MpHtmlInstance | null {
@@ -440,14 +454,16 @@ function extractMpHtml(inst: unknown): MpHtmlInstance | null {
   return null;
 }
 
-function registerMpHtmlRef(index: number, el: unknown) {
-  const inst = extractMpHtml(el);
-  if (inst) mpHtmlRefs.set(index, inst);
-  else mpHtmlRefs.delete(index);
-}
-
-function bindMpHtmlRef(index: number) {
-  return (el: unknown) => registerMpHtmlRef(index, el);
+/** ponytail: 不用 :ref 函数——v-for 卸载/增章时 ref→undefined 会触发微信 setData 警告 */
+function getMpHtmlByIndex(index: number): MpHtmlInstance | null {
+  try {
+    const proxy = readerInstance?.proxy as
+      { $scope?: { selectComponent?: (sel: string) => unknown } } | null | undefined;
+    const comp = proxy?.$scope?.selectComponent?.(`#mp-html-${index}`);
+    return extractMpHtml(comp);
+  } catch {
+    return null;
+  }
 }
 
 function refreshMpHtmlStyles() {
@@ -458,8 +474,9 @@ function refreshMpHtmlStyles() {
     for (const block of chapterBlocks.value) {
       const html = stripReaderColorStyles(block.html);
       if (html !== block.html) block.html = html;
-      if (mpHtmlRefs.has(block.index)) {
-        mpHtmlRefs.get(block.index)?.setContent?.(html);
+      const inst = getMpHtmlByIndex(block.index);
+      if (inst?.setContent) {
+        inst.setContent(html);
         hit++;
       }
     }
@@ -485,9 +502,10 @@ watch([chromeVisible, bottomPanel, tocOpen], () => {
 });
 
 const streamPaddingStyle = computed(() => {
-  if (!chromeVisible.value) return {};
-  const pad = chromeInsets.value.bottom || lastChromeBottom;
-  return pad > 0 ? { paddingBottom: `${pad}px` } : {};
+  const inset = chromeInsets.value.bottom || lastChromeBottom;
+  const pad = chromeVisible.value && inset > 0 ? inset : 0;
+  // 始终带 paddingBottom，避免从小程序 data 里删字段变成 undefined
+  return { paddingBottom: `${pad}px` };
 });
 
 const FONT_SIZE_MIN = 14;
@@ -907,8 +925,8 @@ async function fetchChapterBlock(index: number, forceRefresh = false): Promise<C
 
   return {
     index: data.index,
-    title: data.title,
-    html: stripReaderColorStyles(data.html),
+    title: data.title || "",
+    html: stripReaderColorStyles(data.html || ""),
     href: toc.value[index]?.href ?? "",
   };
 }

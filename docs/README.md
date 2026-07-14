@@ -14,19 +14,20 @@
 
 ## 产品与后端
 
-| 文档                                                                             | 说明                                                                             |
-| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| [epub-reader-implementation.md](./epub-reader-implementation.md)                 | **EPUB 阅读实现说明**（方案 B：BullMQ 解析队列 + mp-html + 进度 + 重试）         |
-| [reader-continuous-stream-impl.md](./reader-continuous-stream-impl.md)           | **实现思路**：连续章节流、起始章恢复（percent 归一）                             |
-| [reader-chrome-toolbar-impl.md](./reader-chrome-toolbar-impl.md)                 | **实现思路**：微信读书式底栏、翻页设置、滚动收栏护栏                             |
-| [reader-toc-drawer-impl.md](./reader-toc-drawer-impl.md)                         | **实现思路**：目录底部抽屉、手势关闭、关闭过渡动画                               |
-| [reader-theme-typography-impl.md](./reader-theme-typography-impl.md)             | **实现思路**：换肤即时生效、两端对齐、HTML 清洗、字体滑轨                        |
-| [reader-page-overscroll-navbar-impl.md](./reader-page-overscroll-navbar-impl.md) | **实现思路**：回弹白底、状态栏/navbar 色、标题避让胶囊                           |
-| [reader-ui-chrome-toc.md](./reader-ui-chrome-toc.md)                             | **问题笔记**（非正式）：阅读页 UI 迭代现象与代码摘录，正式文档见上列 `*-impl.md` |
-| [phase1-epub-shelf-reader-plan.md](./phase1-epub-shelf-reader-plan.md)           | **第一期**：书架 + EPUB 阅读（**方案 B**：后端章节 API + rich-text）             |
-| [backend-ebook-chapter-api.md](./backend-ebook-chapter-api.md)                   | 后端章节解析与 API 规范（`dnhyxc-ai` 实现）                                      |
-| [epub-rendering-implementation.md](./epub-rendering-implementation.md)           | 方案选型、mp-html 集成与里程碑（设计参考）                                       |
-| [wechat-local-setup.md](./wechat-local-setup.md)                                 | 本地微信登录与 Web 账号关联                                                      |
+| 文档                                                                                   | 说明                                                                             |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| [epub-reader-implementation.md](./epub-reader-implementation.md)                       | **EPUB 阅读实现说明**（方案 B：BullMQ 解析队列 + mp-html + 进度 + 重试）         |
+| [reader-continuous-stream-impl.md](./reader-continuous-stream-impl.md)                 | **实现思路**：连续章节流、起始章恢复（percent 归一）                             |
+| [reader-chrome-toolbar-impl.md](./reader-chrome-toolbar-impl.md)                       | **实现思路**：微信读书式底栏、翻页设置、滚动收栏护栏                             |
+| [reader-toc-drawer-impl.md](./reader-toc-drawer-impl.md)                               | **实现思路**：目录底部抽屉、手势关闭、关闭过渡动画                               |
+| [reader-theme-typography-impl.md](./reader-theme-typography-impl.md)                   | **实现思路**：换肤即时生效、两端对齐、HTML 清洗、字体滑轨                        |
+| [reader-page-overscroll-navbar-impl.md](./reader-page-overscroll-navbar-impl.md)       | **实现思路**：回弹白底、状态栏/navbar 色、标题避让胶囊                           |
+| [reader-mp-html-setdata-undefined-impl.md](./reader-mp-html-setdata-undefined-impl.md) | **实现思路**：消除微信 `setData(undefined)` 警告（去掉 v-for 函数 ref）          |
+| [reader-ui-chrome-toc.md](./reader-ui-chrome-toc.md)                                   | **问题笔记**（非正式）：阅读页 UI 迭代现象与代码摘录，正式文档见上列 `*-impl.md` |
+| [phase1-epub-shelf-reader-plan.md](./phase1-epub-shelf-reader-plan.md)                 | **第一期**：书架 + EPUB 阅读（**方案 B**：后端章节 API + rich-text）             |
+| [backend-ebook-chapter-api.md](./backend-ebook-chapter-api.md)                         | 后端章节解析与 API 规范（`dnhyxc-ai` 实现）                                      |
+| [epub-rendering-implementation.md](./epub-rendering-implementation.md)                 | 方案选型、mp-html 集成与里程碑（设计参考）                                       |
+| [wechat-local-setup.md](./wechat-local-setup.md)                                       | 本地微信登录与 Web 账号关联                                                      |
 
 ## 延伸阅读（主仓库 dnhyxc-ai）
 
