@@ -264,12 +264,6 @@
         </view>
       </scroll-view>
     </view>
-
-    <view
-      v-if="hasContent"
-      class="reader-safe-bottom"
-      :style="{ backgroundColor: readerStyle.backgroundColor }"
-    />
   </view>
 </template>
 
@@ -1271,16 +1265,6 @@ function persistProgress(scrollPercent: number) {
 .reader-scroll {
   flex: 1;
   height: 0;
-}
-
-.reader-safe-bottom {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 98;
-  height: env(safe-area-inset-bottom);
-  pointer-events: none;
 }
 
 .reader-stream {
