@@ -33,6 +33,14 @@
       }
     },
     {
+      "path": "pages/listen/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "听书",
+        "backgroundColor": "#ffffff"
+      }
+    },
+    {
       "path": "pages/settings/index",
       "style": {
         "navigationStyle": "custom",

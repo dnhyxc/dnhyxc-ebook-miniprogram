@@ -101,18 +101,20 @@ export function useReaderSettings() {
     const color = `color:${readerStyle.value.color} !important`;
     const justify =
       "text-align:justify !important;text-justify:inter-ideograph;text-align-last:left";
-    const textBase = `line-height:${lineHeight.value};font-size:${fontSize.value}px;${color};${justify}`;
+    // 长串 **** / URL 等无空格字符必须断行，否则会撑出横向滚动
+    const wrap = "overflow-wrap:anywhere;word-break:break-all;max-width:100%";
+    const textBase = `line-height:${lineHeight.value};font-size:${fontSize.value}px;${color};${justify};${wrap}`;
     return {
       p: `margin:0 0 1em;${textBase}`,
       div: textBase,
       span: textBase,
       li: textBase,
       a: textBase,
-      h1: `font-size:${fontSize.value + 8}px;font-weight:600;margin:1em 0 0.5em;${color}`,
-      h2: `font-size:${fontSize.value + 6}px;font-weight:600;margin:1em 0 0.5em;${color}`,
-      h3: `font-size:${fontSize.value + 4}px;font-weight:600;margin:1em 0 0.5em;${color}`,
+      h1: `font-size:${fontSize.value + 8}px;font-weight:600;margin:1em 0 0.5em;${color};${wrap}`,
+      h2: `font-size:${fontSize.value + 6}px;font-weight:600;margin:1em 0 0.5em;${color};${wrap}`,
+      h3: `font-size:${fontSize.value + 4}px;font-weight:600;margin:1em 0 0.5em;${color};${wrap}`,
       img: "max-width:100%;height:auto;display:block;margin:0.5em 0",
-      blockquote: `margin:0.5em 0;padding-left:1em;border-left:3px solid #ccc;${color}`,
+      blockquote: `margin:0.5em 0;padding-left:1em;border-left:3px solid #ccc;${color};${wrap}`,
     };
   });
 

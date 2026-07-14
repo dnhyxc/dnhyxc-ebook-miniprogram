@@ -63,6 +63,16 @@ watch(backgroundThemeId, (id) => {
   applyPageChrome();
 });
 
+/** 仅读主题色，不改状态栏（阅读/听书页有自己的纸张 chrome） */
+export function useThemeAccent() {
+  const accentBtnStyle = computed<CSSProperties>(() => ({
+    backgroundColor: String(themeVars.value.buttonPrimaryBg ?? ""),
+    color: String(themeVars.value.buttonMainColor ?? "#fff"),
+  }));
+
+  return { themeVars, accentBtnStyle };
+}
+
 export function useTheme() {
   applyPageChrome();
 
