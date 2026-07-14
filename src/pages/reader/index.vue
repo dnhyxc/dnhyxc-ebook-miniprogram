@@ -93,7 +93,7 @@
       class="reader-chrome-bottom"
       :class="{
         'reader-chrome-bottom--visible': chromeVisible,
-        'reader-chrome-bottom--dark': paperTheme === 'dark',
+        'reader-chrome-bottom--dark': isDarkPaper,
       }"
       :style="chromeBarStyle"
       @click.stop
@@ -106,10 +106,17 @@
               v-for="opt in paperOptions"
               :key="opt.value"
               class="theme-swatch"
-              :class="{ active: paperTheme === opt.value }"
-              :style="{ backgroundColor: paperStyles[opt.value].bg }"
+              :class="{
+                'theme-swatch--active': paperTheme === opt.value,
+                'theme-swatch--dark': paperStyles[opt.value].dark,
+              }"
               @click="paperTheme = opt.value"
-            />
+            >
+              <view
+                class="theme-swatch__fill"
+                :style="{ backgroundColor: paperStyles[opt.value].bg }"
+              />
+            </view>
           </view>
         </view>
 
@@ -233,7 +240,7 @@
       v-if="hasContent && tocOpen"
       class="toc-sheet"
       :class="{
-        'toc-sheet--dark': paperTheme === 'dark',
+        'toc-sheet--dark': isDarkPaper,
         'toc-sheet--closing': tocClosing,
       }"
       :style="tocSheetStyle"
@@ -334,6 +341,7 @@ const {
   pageModeOptions,
   lineHeightOptions,
   paperOptions,
+  isDarkPaper,
 } = useReaderSettings();
 
 const readerShellStyle = computed(() => ({
@@ -348,7 +356,7 @@ const scrollViewStyle = computed(() => ({
 
 function applyReaderPageChrome() {
   const bg = readerStyle.value.backgroundColor;
-  const frontColor = paperTheme.value === "dark" ? "#ffffff" : "#000000";
+  const frontColor = isDarkPaper.value ? "#ffffff" : "#000000";
   uni.setBackgroundColor({
     backgroundColor: bg,
     backgroundColorTop: bg,
@@ -1347,19 +1355,38 @@ function persistProgress(scrollPercent: number) {
 
 .theme-swatches {
   display: flex;
-  gap: 24rpx;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 4rpx 0 8rpx;
+  box-sizing: border-box;
 }
 
 .theme-swatch {
-  width: 56rpx;
-  height: 56rpx;
+  flex-shrink: 0;
+  width: 64rpx;
+  height: 64rpx;
+  padding: 5rpx;
   border-radius: 50%;
   border: 3rpx solid transparent;
-  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.12);
+  box-sizing: border-box;
 }
 
-.theme-swatch.active {
+.theme-swatch--active {
   border-color: var(--wot-primary-6);
+}
+
+.theme-swatch__fill {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1rpx rgba(0, 0, 0, 0.08);
+}
+
+.theme-swatch--dark .theme-swatch__fill {
+  box-shadow: inset 0 0 0 1rpx rgba(255, 255, 255, 0.2);
 }
 
 .option-pills {

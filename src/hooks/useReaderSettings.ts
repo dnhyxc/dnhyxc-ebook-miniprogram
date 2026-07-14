@@ -1,6 +1,6 @@
 import { computed, ref, watch } from "vue";
 
-export type ReaderPaperTheme = "white" | "sepia" | "green" | "dark";
+export type ReaderPaperTheme = "white" | "sepia" | "green" | "pink" | "blue" | "dark";
 export type ReaderFontFamily = "system" | "serif" | "sans-serif" | "monospace";
 export type ReaderPageMode = "scroll" | "horizontal";
 
@@ -14,11 +14,16 @@ const LINE_HEIGHT_KEY = "reader-line-height";
 const LETTER_SPACING_KEY = "reader-letter-spacing";
 const PAGE_MODE_KEY = "reader-page-mode";
 
-const paperStyles: Record<ReaderPaperTheme, { bg: string; fg: string; label: string }> = {
-  white: { bg: "#ffffff", fg: "#1a1a1a", label: "默认" },
-  sepia: { bg: "#f4ecd8", fg: "#5c4b37", label: "护眼" },
-  green: { bg: "#cce8cf", fg: "#2d4a32", label: "绿色" },
-  dark: { bg: "#1c1c1e", fg: "#e5e5ea", label: "夜间" },
+const paperStyles: Record<
+  ReaderPaperTheme,
+  { bg: string; fg: string; label: string; dark: boolean }
+> = {
+  white: { bg: "#ffffff", fg: "#1a1a1a", label: "默认", dark: false },
+  sepia: { bg: "#faf6eb", fg: "#5c4b37", label: "米黄", dark: false },
+  green: { bg: "#e3edcd", fg: "#2d4a32", label: "绿色", dark: false },
+  pink: { bg: "#f8e6e0", fg: "#5c3a35", label: "粉色", dark: false },
+  blue: { bg: "#e4edf5", fg: "#2c3e50", label: "蓝色", dark: false },
+  dark: { bg: "#1a1a1a", fg: "#e5e5ea", label: "夜间", dark: true },
 };
 
 const fontFamilyCss: Record<ReaderFontFamily, string> = {
@@ -142,6 +147,7 @@ export function useReaderSettings() {
     fontFamilies,
     lineHeightOptions,
     paperStyles,
+    isDarkPaper: computed(() => paperStyles[paperTheme.value].dark),
     paperOptions: (Object.keys(paperStyles) as ReaderPaperTheme[]).map((value) => ({
       value,
       label: paperStyles[value].label,
