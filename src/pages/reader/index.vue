@@ -350,6 +350,7 @@ import { calculatePercent, resolveStartChapterIndex } from "@/types/ebook";
 import { resolveUploadFileUrl } from "@/utils/upload-file-url";
 import {
   buildChapterHtmlSegments,
+  injectListenSentenceHighlight,
   segmentIndexForChar,
   type ChapterHtmlSegment,
 } from "@/utils/listen-text";
@@ -563,8 +564,22 @@ watch(listenActive, (active) => {
   if (active) {
     listenAutoFollow.value = true;
     syncListenFollowAnchor();
+    void nextTick(() => {
+      applyListenSentenceHighlight();
+    });
+  } else {
+    clearListenSentenceHighlight();
   }
 });
+
+// 句切换必刷高亮（与是否跟读无关）；跟读滚屏另有 watch
+watch(
+  () => [listenActive.value, listenChapterIndex.value, listenSentenceIndex.value] as const,
+  ([active]) => {
+    if (!active) return;
+    void nextTick(() => applyListenSentenceHighlight());
+  },
+);
 
 /** 当前章内阅读进度，听书起播用 */
 const readingScrollPercent = ref(0);
@@ -619,6 +634,77 @@ function isListenSegmentedChapter(chapterIdx: number): boolean {
     listenChapterIndex.value === chapterIdx &&
     (chapterBlocks.value.find((b) => b.index === chapterIdx)?.segments.length ?? 0) > 0
   );
+}
+
+/** 当前高亮落在哪章哪段；-1 表示无。只对该段 setContent，避免整章重灌 */
+let listenHlChap = -1;
+let listenHlSeg = -1;
+
+function listenHighlightMarkStyle(): string {
+  // 深浅纸张都能看见的半透明琥珀底
+  return isDarkPaper.value
+    ? "background-color:rgba(255,193,7,0.32);border-radius:2px;color:inherit"
+    : "background-color:rgba(255,193,7,0.45);border-radius:2px;color:inherit";
+}
+
+function setListenSegContent(chap: number, si: number, html: string) {
+  const inst = getMpHtmlById(`mp-html-${chap}-${si}`);
+  inst?.setContent?.(html);
+}
+
+/** 还原上一段干净 HTML（segments 里始终存无高亮原文） */
+function clearListenSentenceHighlight() {
+  if (listenHlChap < 0 || listenHlSeg < 0) return;
+  const block = chapterBlocks.value.find((b) => b.index === listenHlChap);
+  const clean = block?.segments[listenHlSeg]?.html;
+  if (clean != null) setListenSegContent(listenHlChap, listenHlSeg, clean);
+  listenHlChap = -1;
+  listenHlSeg = -1;
+}
+
+/**
+ * 句级高亮：只重绘当前句所在块段。
+ * ponytail: 不改 seg.html 响应式数据，避免 :content watch 与手动 setContent 双灌。
+ */
+function applyListenSentenceHighlight(retry = true) {
+  if (!listenActive.value) {
+    clearListenSentenceHighlight();
+    return;
+  }
+  const chap = listenChapterIndex.value;
+  if (!isListenSegmentedChapter(chap)) return;
+
+  const block = chapterBlocks.value.find((b) => b.index === chap);
+  const meta = listenSentences.value[listenSentenceIndex.value];
+  if (!block?.segments.length || !meta?.text) return;
+
+  const si = segmentIndexForChar(block.segments, meta.start);
+  const seg = block.segments[si];
+  if (!seg) return;
+
+  // 分段刚挂载时实例可能尚未就绪
+  if (!getMpHtmlById(`mp-html-${chap}-${si}`)?.setContent) {
+    if (retry) {
+      void nextTick(() => {
+        setTimeout(() => applyListenSentenceHighlight(false), 48);
+      });
+    }
+    return;
+  }
+
+  if (listenHlChap !== chap || listenHlSeg !== si) {
+    clearListenSentenceHighlight();
+  }
+
+  const highlighted = injectListenSentenceHighlight(
+    seg.html,
+    meta.text,
+    listenHighlightMarkStyle(),
+  );
+  // 从干净 seg.html 注入；匹配失败则等于原文，清掉旧高亮
+  setListenSegContent(chap, si, highlighted);
+  listenHlChap = chap;
+  listenHlSeg = si;
 }
 
 function listenFocusOffsetPx(): number {
@@ -874,6 +960,10 @@ function refreshMpHtmlStyles() {
       await nextTick();
       mpHtmlMounted.value = true;
     }
+    // 换肤 setContent 会冲掉高亮，听书中重刷当前句
+    listenHlChap = -1;
+    listenHlSeg = -1;
+    if (listenActive.value) applyListenSentenceHighlight();
   });
 }
 

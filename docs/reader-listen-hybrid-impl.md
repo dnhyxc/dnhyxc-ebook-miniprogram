@@ -546,3 +546,5 @@ async function onListenTap() {
 - `useChapterListen` / `ttsPlayer`：阅读页、`ListenMiniBar`、听书页
 - `synthesizeEdgeSpeech`：仅 `tts-player`
 - 跟读滚屏精度与 setData 性能见 [reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md)
+- 句级正文高亮见 [reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)
+- 整套复刻指南见 [reader-listen-guide.md](./reader-listen-guide.md)

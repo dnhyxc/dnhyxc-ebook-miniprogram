@@ -10,7 +10,8 @@
 
 听书播放时需把「当前句」保持在屏幕可视区；用户手动滚动后应停止自动跟读，并出现「回位」。同时微信开发者工具对 `mp-html` `setContent` 报出数 MB 级 `setData` 性能警告，句级 HTML 锚点还会造成明显卡顿。
 
-成功标准：跟读时当前播放内容落在视口约上半区；手动滑动可打断并回位；平时阅读仍整章单 `mp-html`，不因句锚膨胀 nodes。
+成功标准：跟读时当前播放内容落在视口约上半区；手动滑动可打断并回位；平时阅读仍整章单 `mp-html`，不因句锚膨胀 nodes。  
+（句级正文高亮在块段方案之上另做，见 [reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)。）
 
 ---
 
@@ -554,6 +555,7 @@ export function segmentIndexForChar(segments: ChapterHtmlSegment[], charOffset: 
 
 ### 6.3 调用面 / 波及说明（建议）
 
-- `buildChapterHtmlSegments` / `segmentIndexForChar`：阅读页加载与跟读
+- `buildChapterHtmlSegments` / `segmentIndexForChar`：阅读页加载与跟读（亦被句高亮复用）
 - `scrollToListenSentence`：句切换 watch、回位、起播
 - 听书会话与迷你条本身见 [reader-listen-hybrid-impl.md](./reader-listen-hybrid-impl.md)
+- 句级高亮见 [reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)

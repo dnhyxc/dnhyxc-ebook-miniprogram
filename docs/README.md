@@ -23,8 +23,10 @@
 | [reader-theme-typography-impl.md](./reader-theme-typography-impl.md)                   | **实现思路**：换肤即时生效、两端对齐、HTML 清洗、字体滑轨                        |
 | [reader-page-overscroll-navbar-impl.md](./reader-page-overscroll-navbar-impl.md)       | **实现思路**：回弹白底、状态栏/navbar 色、标题避让胶囊                           |
 | [reader-mp-html-setdata-undefined-impl.md](./reader-mp-html-setdata-undefined-impl.md) | **实现思路**：消除微信 `setData(undefined)` 警告（去掉 v-for 函数 ref）          |
+| [reader-listen-guide.md](./reader-listen-guide.md)                                     | **功能详解与复刻**：听书整套（TTS/会话/迷你条/跟读/回位/句高亮）                 |
 | [reader-listen-hybrid-impl.md](./reader-listen-hybrid-impl.md)                         | **实现思路**：听书混合形态（Edge TTS、迷你条、独立听书页、倍速不改调）           |
 | [reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md)           | **实现思路**：听书跟读滚屏、回位、块段定位与 setData 性能                        |
+| [reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)                   | **实现思路**：听书句级高亮（仅当前块段 setContent）                              |
 | [reader-html-word-break-impl.md](./reader-html-word-break-impl.md)                     | **实现思路**：正文强制断行，避免长串撑出横向滚动                                 |
 | [reader-ui-chrome-toc.md](./reader-ui-chrome-toc.md)                                   | **问题笔记**（非正式）：阅读页 UI 迭代现象与代码摘录，正式文档见上列 `*-impl.md` |
 | [phase1-epub-shelf-reader-plan.md](./phase1-epub-shelf-reader-plan.md)                 | **第一期**：书架 + EPUB 阅读（**方案 B**：后端章节 API + rich-text）             |
