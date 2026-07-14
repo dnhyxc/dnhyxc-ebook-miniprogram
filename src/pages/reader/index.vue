@@ -1309,6 +1309,7 @@ function persistProgress(scrollPercent: number) {
   z-index: 100;
   backdrop-filter: blur(12px);
   padding-bottom: env(safe-area-inset-bottom);
+  box-shadow: 0 -4rpx 16rpx rgba(0, 0, 0, 0.04);
   transform: translateY(100%);
   opacity: 0;
   pointer-events: none;
