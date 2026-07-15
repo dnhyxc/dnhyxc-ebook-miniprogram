@@ -1,9 +1,9 @@
 import { API_BASE_URL } from "@/config/api";
+import { DEFAULT_EDGE_TTS_VOICE } from "@/constants/edgeTts";
 import { ApiError } from "@/services/http";
 import { getToken } from "@/services/token";
 
-/** 与 Web 默认 Edge 音色一致 */
-export const DEFAULT_EDGE_TTS_VOICE = "zh-CN-XiaoxiaoNeural";
+export { DEFAULT_EDGE_TTS_VOICE };
 
 export type EdgeSpeechOptions = {
   voice?: string;

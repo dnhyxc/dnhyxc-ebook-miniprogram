@@ -1,62 +1,104 @@
 <template>
-  <view v-if="isActive" class="listen-mini" :class="{ 'listen-mini--dark': dark }" @click.stop>
-    <view class="listen-mini__main" @click="expandListenPage">
-      <view class="listen-mini__head">
-        <text class="listen-mini__chapter">{{ chapterTitle || bookTitle || "听书" }}</text>
-        <text class="listen-mini__progress">{{ progressLabel }}</text>
+  <wd-config-provider v-if="isActive" :theme="dark ? 'dark' : 'light'" :theme-vars="miniThemeVars">
+    <view class="listen-mini" :class="{ 'listen-mini--dark': dark }" @click.stop>
+      <view class="listen-mini__main" @click="expandListenPage">
+        <view class="listen-mini__head">
+          <text class="listen-mini__chapter">{{ chapterTitle || bookTitle || "听书" }}</text>
+          <text class="listen-mini__progress">{{ progressLabel }}</text>
+        </view>
+        <text class="listen-mini__sentence">{{ currentSentenceText || "准备朗读…" }}</text>
       </view>
-      <text class="listen-mini__sentence">{{ currentSentenceText || "准备朗读…" }}</text>
-    </view>
 
-    <view v-if="rateMenuOpen" class="listen-mini__rates">
-      <view
-        v-for="r in rates"
-        :key="r"
-        class="listen-mini__rate"
-        :class="{ 'listen-mini__rate--active': rate === r }"
-        :style="rate === r ? accentBtnStyle : undefined"
-        @click.stop="pickRate(r)"
-      >
-        <text>{{ r }}x</text>
+      <view v-if="rateMenuOpen" class="listen-mini__rates">
+        <view v-for="r in rates" :key="r" class="listen-mini__cell">
+          <wd-button
+            type="primary"
+            :variant="rate === r ? 'base' : 'soft'"
+            block
+            size="small"
+            custom-class="listen-mini__btn"
+            @click.stop="pickRate(r)"
+          >
+            {{ r }}x
+          </wd-button>
+        </view>
       </view>
-    </view>
 
-    <view class="listen-mini__actions">
-      <view class="listen-mini__btn" @click.stop="prevListenSentence">
-        <text>上句</text>
-      </view>
-      <view
-        class="listen-mini__btn listen-mini__btn--primary"
-        :style="accentBtnStyle"
-        @click.stop="onToggle"
-      >
-        <text>{{ playLabel }}</text>
-      </view>
-      <view class="listen-mini__btn" @click.stop="nextListenSentence">
-        <text>下句</text>
-      </view>
-      <view
-        class="listen-mini__btn"
-        :class="{ 'listen-mini__btn--menu-open': rateMenuOpen }"
-        @click.stop="toggleRateMenu"
-      >
-        <text>{{ rateLabel }}</text>
-      </view>
-      <view class="listen-mini__btn" @click.stop="expandListenPage">
-        <text>展开</text>
+      <view class="listen-mini__actions">
+        <view class="listen-mini__cell">
+          <wd-button
+            type="primary"
+            variant="soft"
+            block
+            size="small"
+            custom-class="listen-mini__btn"
+            @click.stop="prevListenSentence"
+          >
+            上句
+          </wd-button>
+        </view>
+        <view class="listen-mini__cell">
+          <wd-button
+            type="primary"
+            variant="base"
+            block
+            size="small"
+            custom-class="listen-mini__btn"
+            @click.stop="onToggle"
+          >
+            {{ playLabel }}
+          </wd-button>
+        </view>
+        <view class="listen-mini__cell">
+          <wd-button
+            type="primary"
+            variant="soft"
+            block
+            size="small"
+            custom-class="listen-mini__btn"
+            @click.stop="nextListenSentence"
+          >
+            下句
+          </wd-button>
+        </view>
+        <view class="listen-mini__cell">
+          <wd-button
+            type="primary"
+            :variant="rateMenuOpen ? 'base' : 'soft'"
+            block
+            size="small"
+            custom-class="listen-mini__btn"
+            @click.stop="toggleRateMenu"
+          >
+            {{ rateLabel }}
+          </wd-button>
+        </view>
+        <view class="listen-mini__cell">
+          <wd-button
+            type="primary"
+            variant="soft"
+            block
+            size="small"
+            custom-class="listen-mini__btn"
+            @click.stop="expandListenPage"
+          >
+            展开
+          </wd-button>
+        </view>
       </view>
     </view>
-  </view>
+  </wd-config-provider>
 </template>
 
 <script setup lang="ts">
+import type { ConfigProviderThemeVars } from "@wot-ui/ui";
 import { computed, ref, watch } from "vue";
 import { useChapterListen } from "@/hooks/useChapterListen";
 import { useThemeAccent } from "@/hooks/useTheme";
 
 const emit = defineEmits<{ layout: [] }>();
 
-defineProps<{
+const props = defineProps<{
   dark?: boolean;
 }>();
 
@@ -78,7 +120,7 @@ const {
   expandListenPage,
 } = useChapterListen();
 
-const { accentBtnStyle } = useThemeAccent();
+const { themeVars } = useThemeAccent();
 
 const rateMenuOpen = ref(false);
 
@@ -86,6 +128,23 @@ const playLabel = computed(() => {
   if (status.value === "loading") return "…";
   if (status.value === "playing") return "暂停";
   return "播放";
+});
+
+/** soft 底色对齐原迷你条，并带上组件按下态 SoftBgActive */
+const miniThemeVars = computed<ConfigProviderThemeVars>(() => {
+  const base = themeVars.value;
+  const accent = String(base.buttonPrimaryBg ?? "#dc541b");
+  const dark = !!props.dark;
+  return {
+    ...base,
+    buttonPrimaryBg: accent,
+    buttonPrimaryBgActive: base.buttonPrimaryBgActive,
+    buttonPrimaryColor: accent,
+    buttonPrimaryColorActive: String(base.buttonPrimaryColorActive ?? accent),
+    buttonPrimarySoftBg: dark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.06)",
+    buttonPrimarySoftBgActive: dark ? "rgba(255, 255, 255, 0.2)" : "rgba(0, 0, 0, 0.12)",
+    buttonMainColor: base.buttonMainColor,
+  };
 });
 
 watch(isActive, (active) => {
@@ -164,63 +223,38 @@ function pickRate(r: number) {
   font-variant-numeric: tabular-nums;
 }
 
-.listen-mini__rates {
+.listen-mini__rates,
+.listen-mini__actions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: stretch;
   gap: 16rpx;
+}
+
+.listen-mini__rates {
   margin-bottom: 24rpx;
 }
 
-.listen-mini__rate {
+/* 等分格子包一层，避免 wd-button 按文案撑宽 */
+.listen-mini__cell {
   flex: 1;
   min-width: 0;
-  height: 64rpx;
-  border-radius: 999rpx;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 26rpx;
-  background: rgba(0, 0, 0, 0.06);
+  width: 0;
+}
+
+.listen-mini :deep(.listen-mini__btn) {
+  width: 100% !important;
+  height: 56rpx !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  border-radius: 12rpx !important;
+  font-size: 24rpx !important;
+  font-variant-numeric: tabular-nums;
   box-sizing: border-box;
 }
 
-.listen-mini--dark .listen-mini__rate {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.listen-mini__rate--active {
-  font-weight: 600;
-}
-
-.listen-mini__actions {
-  display: flex;
-  align-items: center;
-  gap: 24rpx; /* 与左右 padding 一致 */
-}
-
-.listen-mini__btn {
-  flex: 1;
-  min-width: 0;
-  height: 68rpx;
-  border-radius: 12rpx;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 28rpx;
-  background: rgba(0, 0, 0, 0.06);
-}
-
-.listen-mini--dark .listen-mini__btn {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.listen-mini__btn--primary {
-  font-weight: 600;
-}
-
-.listen-mini__btn--menu-open {
-  font-weight: 600;
-  opacity: 1;
+.listen-mini :deep(.listen-mini__btn::after) {
+  border-radius: 12rpx !important;
 }
 </style>

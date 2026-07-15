@@ -1,4 +1,9 @@
 import { computed, ref } from "vue";
+import {
+  DEFAULT_EDGE_TTS_VOICE,
+  getEdgeTtsVoiceNameZh,
+  isEdgeTtsVoiceId,
+} from "@/constants/edgeTts";
 import { ttsPlayer } from "@/services/tts-player";
 import type { ListenSentence } from "@/utils/listen-text";
 import { chapterToSentences } from "@/utils/listen-text";
@@ -22,6 +27,17 @@ export type StartListenOptions = {
 };
 
 const LISTEN_RATES = [0.75, 1, 1.25, 1.5, 2] as const;
+const VOICE_STORAGE_KEY = "ebook_edge_tts_voice";
+
+function loadStoredVoice(): string {
+  try {
+    const id = uni.getStorageSync(VOICE_STORAGE_KEY);
+    if (typeof id === "string" && isEdgeTtsVoiceId(id)) return id;
+  } catch {
+    // ignore
+  }
+  return DEFAULT_EDGE_TTS_VOICE;
+}
 
 const status = ref<ListenStatus>("idle");
 const bookId = ref("");
@@ -32,6 +48,7 @@ const chapterTitle = ref("");
 const sentences = ref<ListenSentence[]>([]);
 const sentenceIndex = ref(0);
 const rate = ref(1);
+const voice = ref(loadStoredVoice());
 const currentSentenceText = ref("");
 
 let getChapterFn: StartListenOptions["getChapter"] | null = null;
@@ -114,11 +131,24 @@ async function loadAndPlayChapter(
       uni.showToast({ title: message, icon: "none" });
       status.value = "paused";
     },
+    onPlay: () => {
+      if (gen !== sessionGen) return;
+      status.value = "playing";
+    },
+    onPause: () => {
+      if (gen !== sessionGen) return;
+      if (status.value === "playing" || status.value === "loading") {
+        status.value = "paused";
+      }
+    },
   });
-  ttsPlayer.setRate(rate.value);
+  // 起播前只同步参数，避免 setVoice/setRate 抢跑 playCurrent 触发误报 onError
+  ttsPlayer.setVoice(voice.value, { play: false });
+  ttsPlayer.setRate(rate.value, { play: false });
 
   await ttsPlayer.playFrom(startIdx);
   if (gen !== sessionGen) return;
+  // 真正出声以 onPlay 为准；此处仅兜底，避免一直停在 loading
   if (status.value === "loading") status.value = "playing";
 }
 
@@ -145,12 +175,16 @@ async function advanceChapter(): Promise<void> {
 export async function startListen(opts: StartListenOptions): Promise<void> {
   sessionGen += 1;
   ttsPlayer.stop();
+  // 必须在本函数第一个 await 之前：点击栈内解锁，否则体验版首次异步 play 必失败
+  ttsPlayer.unlockFromUserGesture();
   getChapterFn = opts.getChapter;
   bookId.value = opts.bookId;
   bookTitle.value = opts.bookTitle;
   coverUrl.value = opts.coverUrl ?? "";
   chapterIndex.value = opts.chapterIndex;
   rate.value = 1;
+  ttsPlayer.setVoice(voice.value, { play: false });
+  ttsPlayer.setRate(1, { play: false });
   // 先进入 loading，立刻露出迷你条，再拉章合成
   status.value = "loading";
   currentSentenceText.value = "准备朗读…";
@@ -214,6 +248,18 @@ export function setListenRate(next: number): void {
   if (status.value !== "idle") status.value = "playing";
 }
 
+export function setListenVoice(next: string): void {
+  if (!isEdgeTtsVoiceId(next) || next === voice.value) return;
+  voice.value = next;
+  try {
+    uni.setStorageSync(VOICE_STORAGE_KEY, next);
+  } catch {
+    // ignore
+  }
+  ttsPlayer.setVoice(next);
+  if (status.value !== "idle") status.value = "playing";
+}
+
 export function cycleListenRate(): void {
   const idx = LISTEN_RATES.indexOf(rate.value as (typeof LISTEN_RATES)[number]);
   const next = LISTEN_RATES[(idx + 1) % LISTEN_RATES.length] ?? 1;
@@ -246,6 +292,7 @@ export function useChapterListen() {
     return `${sentenceIndex.value + 1}/${sentences.value.length}`;
   });
   const rateLabel = computed(() => `${rate.value}x`);
+  const voiceLabel = computed(() => getEdgeTtsVoiceNameZh(voice.value));
 
   return {
     status,
@@ -261,6 +308,8 @@ export function useChapterListen() {
     currentSentenceText,
     rate,
     rateLabel,
+    voice,
+    voiceLabel,
     progressLabel,
     rates: LISTEN_RATES,
     startListen,
@@ -272,6 +321,7 @@ export function useChapterListen() {
     prevListenSentence,
     nextListenSentence,
     setListenRate,
+    setListenVoice,
     cycleListenRate,
     expandListenPage,
     stopListenIfLeavingReader,

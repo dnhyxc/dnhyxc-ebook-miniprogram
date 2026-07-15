@@ -1,10 +1,10 @@
 # 听书功能（功能实现详解与复刻指南）
 
-> **一句话**：在阅读页点「听」，用 Edge TTS 逐句朗读当前书，底部迷你条播控，可展开独立听书页，正文跟读滚屏并句级高亮，手动滑动可打断并回位。  
-> **入口**：阅读页底栏工具条「听」；听书中底栏收起时右下角圆形「听」；迷你条「展开」进 `/pages/listen/index`。  
-> **关联文件**：见 §0.4 文件地图。  
-> **文档目标**：读懂整套听书如何串起来；按 §5 可在其他 uni-app / 小程序项目复刻等价逻辑。  
-> **非目标**：不写 EPUB 解析/书架/主题换肤本体；不写 Web 端听书实现；不做词级卡拉 OK 高亮。  
+> **一句话**：在阅读页点「听」，用 Edge TTS 逐句朗读当前书；迷你条 + 可选独立听书页播控；正文跟读与句级高亮；锁屏可续播，退出小程序则停播。  
+> **入口**：阅读页底栏「听」；听书中底栏收起时右下角圆形「听」；迷你条「展开」进 `/pages/listen/index`。  
+> **关联文件**：见 §0.4。  
+> **文档目标**：读懂整套听书如何串起来；按 §5 可在其他 uni-app / 微信小程序项目复刻等价逻辑。  
+> **非目标**：不写 EPUB 解析/书架/主题换肤本体；不写 Web 端听书；不做词级卡拉 OK。  
 > **改动追溯**：[reader-listen-hybrid-impl.md](./reader-listen-hybrid-impl.md)、[reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md)、[reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)
 
 ---
@@ -13,104 +13,110 @@
 
 ### 0.1 30 秒读懂
 
-- **做什么**：把章节 HTML 切成句子 → 后端 Edge TTS 合成 mp3 → 页内音频逐句播；阅读页迷你条 + 可选大字听书页；播放时正文跟读到当前句并做句级高亮。
-- **不做什么**：不做词级卡拉 OK；不用微信原生后台音频底栏盖住自定义 UI（现用 `InnerAudioContext`）；不高亮时不整章重灌 HTML。
-- **关键角色**：界面（阅读页 / 迷你条 / 听书页）只展示与点按；会话层 `useChapterListen` 持有状态；能力层 `tts` + `ttsPlayer` + `listen-text` 负责分句、合成、播放与高亮注入。
+- **做什么**：章节 HTML → 分句 → 后端 Edge TTS 合成 mp3 → `BackgroundAudioManager` 逐句播；阅读页迷你条 / 听书页播控；跟读滚屏 + 句高亮；锁屏续播；退出小程序停播。
+- **不做什么**：不用 `InnerAudioContext` 做主播放（锁屏会被系统停）；不在 `App.onHide` 无差别停播（会误伤锁屏）。
+- **三层角色**：
+  - **界面**：阅读页入口、迷你条、听书页、跟读/高亮 UI
+  - **会话**：`useChapterListen` 模块级单例状态
+  - **能力**：`listen-text` 分句、`tts` 合成、`ttsPlayer` 后台音频
 
 ### 0.2 功能点总表（必填）
 
-| 编号 | 功能点（人话）                   | 用户可感知表现                     | 关键实现位置                                                     | 正文  |
-| ---- | -------------------------------- | ---------------------------------- | ---------------------------------------------------------------- | ----- |
-| F1   | 章节 HTML 变成可朗读的句子列表   | （幕后）有句才开播                 | `listen-text.ts` → `chapterToSentences`                          | §4.1  |
-| F2   | 向后端要一句语音二进制           | 短暂「合成中」后出声               | `tts.ts` → `synthesizeEdgeSpeech`                                | §4.2  |
-| F3   | 逐句播放、预取下一句、倍速重合成 | 连续听、切倍速不变调               | `tts-player.ts` → `TtsPlayer`                                    | §4.3  |
-| F4   | 听书会话：开始 / 暂停 / 停止     | 状态在 idle↔loading↔playing↔paused | `useChapterListen.ts`                                            | §4.4  |
-| F5   | 从当前阅读进度附近起播           | 不是每次都从章首听                 | `onListenTap` + `scrollPercent`                                  | §4.5  |
-| F6   | 底栏迷你播控条与倍速菜单         | 上/下句、播控、Nx、展开            | `ListenMiniBar.vue`                                              | §4.6  |
-| F7   | 展开独立听书页看大字当前句       | 新页大字 + 底栏播控，返回不断播    | `pages/listen/index.vue`                                         | §4.7  |
-| F8   | 底栏「听」开关与收栏圆形入口     | 点听开/关；收栏右下角「听」唤回    | `reader/index.vue` 工具条/FAB                                    | §4.8  |
-| F9   | 播放时正文跟读到当前句           | 当前句落在屏幕上半区               | 块段 `#ls-*` + `scrollToListenSentence`                          | §4.9  |
-| F10  | 手动滑动打断跟读并「回位」       | 出回位钮；点回位继续跟             | `listenAutoFollow` / 回位 FAB                                    | §4.10 |
-| F11  | 听书中滚动不收底栏；目录跳章续听 | 底栏常驻；点目录从该章章首听       | `onScroll` / `goChapter`                                         | §4.11 |
-| F12  | 章末自动下一章；全书听完停       | Toast「已听完本书」或继续播        | `advanceChapter`                                                 | §4.12 |
-| F13  | 离开阅读栈且不在听书页则停播     | 回书架等场景不残留播放             | `stopListenIfLeavingReader`                                      | §4.13 |
-| F14  | 路由与微信音频相关配置           | 听书页可打开                       | `pages.json` / `manifest.json`                                   | §4.14 |
-| F15  | 当前播放句在正文中高亮           | 当前句琥珀色底，切句跟随           | `injectListenSentenceHighlight` + `applyListenSentenceHighlight` | §4.15 |
+| 编号 | 功能点（人话）                   | 用户可感知表现              | 关键实现位置                            | 正文  |
+| ---- | -------------------------------- | --------------------------- | --------------------------------------- | ----- |
+| F1   | 章节 HTML 切成可朗读句子         | （幕后）有句才开播          | `listen-text.ts` → `chapterToSentences` | §4.1  |
+| F2   | 向后端要一句语音二进制           | 「准备朗读…」后出声         | `tts.ts` → `synthesizeEdgeSpeech`       | §4.2  |
+| F3   | 后台音频逐句播、预取、倍速重合成 | 连续听、改倍速不变调        | `tts-player.ts` → `TtsPlayer`           | §4.3  |
+| F4   | 听书会话开始/暂停/停止           | idle↔loading↔playing↔paused | `useChapterListen.ts`                   | §4.4  |
+| F5   | 按当前阅读滚动进度起播           | 不是每次从章首              | `onListenTap` + `scrollPercent`         | §4.5  |
+| F6   | 底栏迷你播控条与倍速             | 上/下句、播控、Nx、展开     | `ListenMiniBar.vue`                     | §4.6  |
+| F7   | 独立听书页 + Edge 音色           | 大字当前句、抽屉选音色      | `pages/listen/index.vue` + `edgeTts.ts` | §4.7  |
+| F8   | 底栏「听」开关与收栏入口         | 点听开/关；收栏右下角「听」 | `reader/index.vue`                      | §4.8  |
+| F9   | 播放时正文跟读到当前句           | 当前句落在上半屏            | 块段 + `scrollToListenSentence`         | §4.9  |
+| F10  | 手动滑打断跟读并「回位」         | 出回位钮；点回位继续跟      | `listenAutoFollow` / 回位 FAB           | §4.10 |
+| F11  | 章末自动下一章；全书听完停       | Toast「已听完本书」或续播   | `advanceChapter`                        | §4.11 |
+| F12  | 锁屏续播；退出小程序停播         | 锁屏仍出声；关小程序停      | BGM + `App.vue` `onAppHide`             | §4.12 |
+| F13  | 离开阅读栈且不在听书页则停       | 回书架不残留播放            | `stopListenIfLeavingReader`             | §4.13 |
+| F14  | 路由与后台 audio 配置            | 听书页可开、后台模式合法    | `pages.json` / `manifest.json`          | §4.14 |
+| F15  | 当前句正文高亮                   | 琥珀色底，切句跟随          | `injectListenSentenceHighlight`         | §4.15 |
 
 ### 0.3 架构一图（必填）
 
 ```mermaid
 flowchart TB
   subgraph UI[界面层]
-    Reader[阅读页 听/回位/跟读/高亮]
+    Reader[阅读页 听/跟读/高亮]
     Mini[ListenMiniBar]
-    Page[听书页 pages/listen]
+    Page[听书页 语速/音色]
+    AppHide[App onAppHide]
   end
   subgraph Session[会话层]
     Hook[useChapterListen 单例 refs]
   end
   subgraph Cap[能力层]
-    Split[listen-text 分句/切段/高亮注入]
+    Split[listen-text 分句/切段/高亮]
     TTS[tts synthesizeEdgeSpeech]
-    Player[ttsPlayer InnerAudioContext]
+    Player[ttsPlayer BackgroundAudioManager]
   end
-  Reader -->|startListen / getChapter| Hook
+  Reader -->|startListen| Hook
   Mini --> Hook
   Page --> Hook
+  AppHide -->|reason 0/1 stopListen| Hook
   Hook -->|chapterToSentences| Split
   Hook -->|configure / playFrom| Player
-  Player -->|speed| TTS
+  Player -->|speed+voice| TTS
   TTS -->|arraybuffer| Player
   Player -->|onSentenceChange| Hook
-  Hook -->|sentenceIndex 变化| Reader
-  Reader -->|scrollToListenSegment| Reader
-  Reader -->|applyListenSentenceHighlight| Split
+  Hook -->|sentenceIndex| Reader
 ```
 
 ### 0.4 文件地图与建造顺序（必填）
 
-| 建造序 | 文件                                       | 职责（一句话）                            | 依赖                 |
-| ------ | ------------------------------------------ | ----------------------------------------- | -------------------- |
-| 1      | `src/utils/listen-text.ts`                 | HTML→纯文本→分句；块段切分；句级高亮注入  | 无                   |
-| 2      | `src/services/tts.ts`                      | Edge TTS HTTP，可 abort                   | 登录 token、API 基址 |
-| 3      | `src/services/tts-player.ts`               | 逐句合成写入临时 mp3 并播放               | 1、2                 |
-| 4      | `src/hooks/useChapterListen.ts`            | 听书会话状态与对外 API                    | 1、3                 |
-| 5      | `src/components/ListenMiniBar.vue`         | 阅读页底栏迷你播控                        | 4                    |
-| 6      | `src/pages/listen/index.vue`               | 独立大字听书页                            | 4                    |
-| 7      | `src/pages.json` / `src/manifest.json`     | 注册听书页；声明 audio 后台模式           | 6                    |
-| 8      | `src/pages/reader/index.vue`               | 入口、跟读、回位、句高亮、getChapter 注入 | 1、4、5              |
-| 9      | `src/hooks/useTheme.ts` → `useThemeAccent` | 听书按钮主题色                            | 主题系统             |
+| 建造序 | 文件                                   | 职责（一句话）                               | 依赖            |
+| ------ | -------------------------------------- | -------------------------------------------- | --------------- |
+| 1      | `src/utils/listen-text.ts`             | HTML→分句；块段；句高亮注入                  | 无              |
+| 2      | `src/constants/edgeTts.ts`             | Edge 音色列表与默认                          | 无              |
+| 3      | `src/services/tts.ts`                  | Edge TTS HTTP，可 abort                      | API 基址、token |
+| 4      | `src/services/tts-player.ts`           | BGM 逐句播、预取、锁屏控播                   | 1、2、3         |
+| 5      | `src/hooks/useChapterListen.ts`        | 会话状态与对外 API                           | 1、2、4         |
+| 6      | `src/components/ListenMiniBar.vue`     | 阅读页迷你播控                               | 5               |
+| 7      | `src/pages/listen/index.vue`           | 独立听书页 + 音色抽屉                        | 2、5            |
+| 8      | `src/pages.json` / `src/manifest.json` | 听书页路由；`requiredBackgroundModes: audio` | 7               |
+| 9      | `src/App.vue`                          | 退出类 AppHide 停播                          | 5               |
+| 10     | `src/pages/reader/index.vue`           | 入口、跟读、高亮、getChapter                 | 1、5、6         |
 
 ---
 
 ## 1. 人话版：用户旅程（必填）
 
-1. **进入**：用户在阅读页打开一本书，滑到某处，点底栏「听」。
-2. **主路径**：底部立刻出现迷你条（「准备朗读…」）→ 当前章被拆成许多短句 → 后端合成第一句语音 → 手机出声；正文自动滚到正在念的那一句附近，并给该句琥珀色高亮；迷你条显示当前句摘要与进度 `3/120`。
+1. **进入**：打开一本书，滑到某处，点底栏「听」。
+2. **主路径**：立刻出现迷你条（「准备朗读…」）→ 当前章拆成短句 → 后端合成第一句 → 手机出声；正文滚到当前句并琥珀色高亮；迷你条显示句摘要与 `3/120`。
 3. **分支**：
-   - 点暂停/继续、上句/下句、倍速菜单（如 1.25x，音色不变尖）；高亮随当前句移动。
-   - 点「展开」进听书页看大字，返回阅读页声音不断。
-   - 用手滑正文：自动跟读停下，出现「回位」；高亮仍跟当前句；点回位又跟着念。
-   - 听书时上下滑不自动收底栏；收栏后右下角圆形「听」可唤回底栏。
-   - 点目录某章：正文跳过去并从该章开头续听。
-   - 一章念完自动下一章；没有下一章则提示听完并停止。
-4. **离开**：再点「听/关闭」停播，高亮消失；若从阅读页退回书架且栈里没有听书页，也会停播。
+   - 暂停/继续、上/下句；倍速（如 1.25x，不变尖）；听书页换 Edge 音色（记住选择）。
+   - 「展开」进听书页看大字，返回阅读页声音不断。
+   - 手滑正文：跟读停下，出「回位」；高亮仍跟当前句。
+   - 听书时滚动不自动收底栏；收栏后右下角「听」可唤回。
+   - 目录跳章：从该章章首续听。
+   - 一章念完自动下一章；全书完则提示并停止。
+   - **锁屏**：继续播，控制中心可切句。
+   - **关闭小程序 / 进其他小程序**：听书停止。
+4. **离开**：再点「听/关闭」停播；或从阅读页回书架（栈无听书页）停播。
 
 ---
 
 ## 2. 问题与解决方案总表（必填）
 
-| 问题编号 | 现象 / 风险（人话）                                | 根因                             | 解决方案（本项目做法）                         | 对应功能点 |
-| -------- | -------------------------------------------------- | -------------------------------- | ---------------------------------------------- | ---------- |
-| P1       | 用微信后台音频管理器会弹出原生底栏盖住自定义迷你条 | `BackgroundAudioManager` 系统 UI | 改用 `InnerAudioContext`，并主动 `stop` 后台条 | F3, F6     |
-| P2       | 客户端 `playbackRate` 让声音变尖                   | 变速连音调一起变                 | 倍速只改 TTS 请求的 `speed`，播放端固定 1      | F2, F3, F6 |
-| P3       | 切句时 Network 堆一堆未完成合成                    | 预取未取消                       | `abort` + `jobs` Map，切句只保留当前 key       | F2, F3     |
-| P4       | 往 HTML 插每句锚点导致 setData 数 MB、卡顿         | mp-html nodes 膨胀               | 不灌句锚；听书当前章用原生 view 块段定位       | F9         |
-| P5       | 整章字符占比跟读对不齐屏幕                         | 图/标题占高但无字                | 块段量高 + 段内字符微调，失败再整章估算        | F9         |
-| P9       | 句级高亮若整章 setContent 会再次卡顿               | 富文本重解析成本高               | 只对当前句所在块段注入 span 并 setContent      | F15        |
-| P6       | 程序滚屏被误判成「用户手滑打断」                   | enhanced scroll-view 事件难分    | 时间窗 `markListenProgrammatic` + 基线位移阈值 | F10        |
-| P7       | 听书时跟读滚动把底栏收起来                         | 原滚动收栏逻辑                   | `listenActive` 时跳过自动收栏                  | F11        |
-| P8       | 异步拉章/合成时用户已点停止仍回调                  | 竞态                             | `sessionGen` / `playGen` 代际作废              | F4, F3     |
+| 问题编号 | 现象 / 风险（人话）      | 根因                                 | 解决方案（本项目做法）                                    | 对应功能点 |
+| -------- | ------------------------ | ------------------------------------ | --------------------------------------------------------- | ---------- |
+| P1       | 锁屏后没声               | `InnerAudioContext` 进后台被系统停   | 改用 `BackgroundAudioManager` + `requiredBackgroundModes` | F3, F12    |
+| P2       | 关小程序还在播           | BGM + 后台模式默认退出续播           | `wx.onAppHide` 仅 `reason` 0/1 时 `stopListen`            | F12        |
+| P3       | 锁屏也被停               | 曾在 `App.onHide` 无差别 stop        | 用 `reason` 区分退出与「其他（含锁屏）」                  | F12        |
+| P4       | 改倍速声音变尖           | `playbackRate` 同时改变调            | 倍速只走 TTS `speed` 重合成                               | F2, F3     |
+| P5       | 切句时网络堆一堆 pending | 预取未 abort                         | `abort` + `abortSpeechExcept`                             | F2, F3     |
+| P6       | 体验版首次点听失败       | `play` 落在 await 之后，脱离点击手势 | `startListen` 首个 await 前 `unlockFromUserGesture`       | F3, F4     |
+| P7       | 能播却弹「音频播放失败」 | BGM/`InnerAudio` `onError` 误报多    | 不据此 toast；合成失败才提示                              | F3         |
+| P8       | 整章 setData 过大卡顿    | 句锚灌进整章 mp-html                 | 块段切分 + 仅当前块段高亮 setContent                      | F9, F15    |
+| P9       | 跟读与用户滚屏打架       | 句切换强制滚                         | 超阈值打断跟读 + 「回位」                                 | F10        |
 
 ---
 
@@ -118,75 +124,72 @@ flowchart TB
 
 ### 3.1 总体策略
 
-把「朗读引擎」与「阅读 UI」拆开：引擎是模块级单例（hook + player），任何页面 import 同一套状态；阅读页负责注入 `getChapter`、跟读滚屏、句级高亮和 chrome 交互。分句在本地做，不新增后端字段。跟读与高亮都建立在听书当前章的块段上：定位用原生 `view` id，高亮只对当前段 `setContent`，避免整章重灌。
+- **分句在客户端**：不依赖后端切句，HTML→纯文本→句界与 Web 对齐。
+- **会话单例**：`useChapterListen` 用模块级 `ref`，阅读页与听书页共享同一会话。
+- **播放用 BGM**：为锁屏/控制中心；代价是系统音频条与自定义迷你条并存。
+- **退出用 reason**：微信基础库 3.5.7+ 的 `onAppHide.reason` 才能兼顾「关小程序停 / 锁屏继续」。
 
 ### 3.2 数据流与控制流
 
-1. `startListen` → `status=loading` → `getChapter(html)` → `chapterToSentences`
-2. `ttsPlayer.configure` + `playFrom(startIdx)` → 合成 → 写临时 mp3 → `InnerAudioContext.play`
-3. `onEnded` → 下一句；句尽 → `onChapterEnd` → `advanceChapter`
-4. `sentenceIndex` 变化 → 阅读页 `watch` → `scrollToListenSentence`
+1. `startListen` → 手势解锁 → `loadAndPlayChapter` → `chapterToSentences` → `configure` → `playFrom`
+2. `playCurrent`：合成 → 写 `USER_DATA_PATH` 临时 mp3 → 设 BGM 元数据 → `bgm.src`
+3. `onEnded` → 下一句；末句 → `onChapterEnd` → `advanceChapter`
+4. `onSentenceChange` → 更新句文案 → 阅读页跟读/高亮
 
-### 3.3 模块职责
+### 3.3 模块职责（谁调用谁）
 
-| 模块               | 谁调用我             | 我调用谁                        |
-| ------------------ | -------------------- | ------------------------------- |
-| `listen-text`      | hook、阅读页切段     | 无                              |
-| `tts`              | player               | `uni.request`、token            |
-| `ttsPlayer`        | hook                 | tts、文件系统、InnerAudio       |
-| `useChapterListen` | 阅读页/迷你条/听书页 | listen-text、ttsPlayer          |
-| 阅读页跟读         | 句切换 watch         | listen-text 切段、SelectorQuery |
+- Reader / MiniBar / Listen 页 → 只调 hook API
+- Hook → `ttsPlayer` + `chapterToSentences`
+- Player → `synthesizeEdgeSpeech`
+- Reader 跟读/高亮 → `listen-text` 块段与 inject（不经过 player）
 
 ---
 
-## 4. 分功能点详解（必填，核心）
+## 4. 分功能点详解（必填）
 
 ### 4.1 F1：章节 HTML 变成句子列表
 
 #### （1）人话说明
 
-后端给的是带标签的章节 HTML。听书前要先变成一句句纯文字，每句还要记住它在整章文字里的起止位置，后面跟读才知道滚到哪一段。
+要把一章网页式正文变成「一句一句」的朗读单元。先去掉标签得到纯文字，再按中英文句号等切开，并记下每句在全文里的起止位置（后面高亮要用）。
 
 #### （2）实现思路
 
-清洗标签与 Markdown 痕迹 → 按中英文句号等切句（与 Web 对齐）→ 产出 `{ text, index, start, end }`。
+分句与 Web `englishTts` 对齐；`start/end` 与 `htmlToPlainText` + `stripMarkdownForTts` 同一坐标系，便于跟读/高亮定位。
 
 #### （3）问题与对策
 
-对应 P5 的坐标系：`start/end` 必须与切段用的纯文本清洗一致。无则注意：空章返回 `[]`。
+无独立踩坑；注意空章要返回 `[]`，由会话层决定跳下一章或 toast。
 
 #### （4）实现过程
 
-1. `htmlToPlainText` 去脚本/样式/标签，块结束换行。
-2. `stripMarkdownForTts` 去掉代码块、强调标记等。
-3. `buildSentenceOffsetSpans` 找句界。
-4. `chapterToSentences` 组装并过滤空句。
+1. HTML → 纯文本
+2. 再清一层 TTS 不需要的标记
+3. 算句界 spans → 映射为 `ListenSentence[]`
 
-#### （5）关键代码（逐行上方注释）
+#### （5）关键代码
 
 - **位置**：`src/utils/listen-text.ts` → `chapterToSentences`
 
 ```ts
-// 导出：把章节 HTML 变成带偏移的句子数组
+// 导出：把章节 HTML 变成带起止坐标的句子数组
 export function chapterToSentences(html: string): ListenSentence[] {
-  // 先转纯文本再清 Markdown，得到分句坐标系
+  // 先转纯文本，再剥一层 TTS 无关噪音
   const plain = stripMarkdownForTts(htmlToPlainText(html));
-  // 没有字则本章不可朗读
+  // 没有正文就没有句子
   if (!plain) return [];
-  // 按句界切出 start/end，再映射成 ListenSentence
+  // 在纯文本上切句界，再填 text/index/start/end
   return (
     buildSentenceOffsetSpans(plain)
       .map(({ start, end }) => ({
-        // 句文本再清一次，避免残留标记
+        // 每句再 trim，避免边界空白进合成
         text: stripMarkdownForTts(plain.slice(start, end)).trim(),
-        // 纯文本起点
         start,
-        // 纯文本终点
         end,
       }))
       // 丢掉空句
       .filter((s) => s.text.length > 0)
-      // 重新编号 index
+      // 补上稳定的 index
       .map((s, index) => ({ text: s.text, index, start: s.start, end: s.end }))
   );
 }
@@ -194,144 +197,275 @@ export function chapterToSentences(html: string): ListenSentence[] {
 
 #### （6）复刻提示
 
-- 可原样搬：句界算法与清洗顺序。
-- 须替换：若宿主已有 HTML→text，需保证与跟读切段同一套清洗。
-- 最小验证：对 `"<p>你好。</p><p>世界！</p>"` 得到 2 句。
+换项目时只需保证「纯文本坐标系」与高亮定位一致；句界规则可按语言调整。
 
 ---
 
-### 4.2 F2：Edge TTS 合成一句语音
+### 4.2 F2：Edge TTS 合成一句音频
 
 #### （1）人话说明
 
-把一句中文发给后端 Edge 接口，拿回一段音频二进制（mp3）。请求必须能取消，否则连点下句会堆很多半截请求。
+把一句中文发给自己的后端，后端用 Edge 语音合成，返回一段 mp3 二进制。切句或停止时要能取消还在飞的请求。
 
 #### （2）实现思路
 
-不用通用 JSON HTTP 封装（要 `arraybuffer`）。返回 `{ promise, abort }`。倍速用 body 里的 `speed`。
+不走通用 JSON unwrap（响体是 arraybuffer）；返回 `{ promise, abort }` 给播放器管理生命周期。`speed` 表示听书倍速，避免播放端变调。
 
 #### （3）问题与对策
 
-P2、P3：speed 走合成；abort 清 pending。边界：未配置 `API_BASE_URL`、空文本、401、超时 45s。
+对应 P4、P5：倍速走 `speed`；切句必须 `abort`。
 
 #### （4）实现过程
 
-1. 校验基址与文本。
-2. 带 Bearer token POST。
-3. success 校验状态码后 `resolve(ArrayBuffer)`。
-4. `abort` 调 `task.abort` 并 reject「已取消」。
+1. 校验 baseURL / 文本
+2. 带 token POST
+3. 成功 resolve ArrayBuffer；失败/超时/abort reject
 
-#### （5）关键代码（逐行上方注释）
+#### （5）关键代码
 
-- **位置**：`src/services/tts.ts` → `synthesizeEdgeSpeech`（核心请求体）
+- **位置**：`src/services/tts.ts` → `synthesizeEdgeSpeech`
 
 ```ts
-// 发起可取消的合成请求
-task = uni.request({
-  // Edge 合成接口
-  url: `${API_BASE_URL}/speech-transcription/edge/speech`,
-  // POST JSON
-  method: "POST",
-  // 含 Content-Type 与可选 Authorization
-  header,
-  data: {
-    // 待朗读文本
-    text: trimmed,
-    // 默认晓晓音色
-    voice: options.voice ?? DEFAULT_EDGE_TTS_VOICE,
-    // 倍速写在合成参数里，避免播放器变调
-    speed: options.speed ?? 1,
-    // 音量
-    vol: options.vol ?? 5,
-    // 音调
-    pitch: options.pitch ?? 0,
-  },
-  // 直接拿二进制，不走 JSON 解析
-  responseType: "arraybuffer",
-  // 超时与本地 timer 双保险
-  timeout: SPEECH_TIMEOUT_MS,
-  // … success / fail 中 finish 防重复 settle
-});
+// 导出可取消的 Edge 合成请求
+export function synthesizeEdgeSpeech(
+  text: string,
+  options: EdgeSpeechOptions = {},
+): EdgeSpeechRequest {
+  // 未配置 API 基址时直接失败，避免打到错误域名
+  if (!API_BASE_URL) {
+    return {
+      promise: Promise.reject(new ApiError(0, "未配置 VITE_API_BASE_URL")),
+      abort: () => undefined,
+    };
+  }
+  // 去掉首尾空白；空串不发请求
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return {
+      promise: Promise.reject(new ApiError(0, "朗读文本为空")),
+      abort: () => undefined,
+    };
+  }
+  // JSON 请求头；有登录态则带 Bearer
+  const header: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  const token = getToken();
+  if (token) header.Authorization = `Bearer ${token}`;
+  // settled 保证 success/fail/abort/超时只结束一次
+  let settled = false;
+  let task: UniApp.RequestTask | null = null;
+  let rejectFn: ((err: ApiError) => void) | null = null;
+  const finish = (fn: () => void) => {
+    if (settled) return;
+    settled = true;
+    fn();
+  };
+  const promise = new Promise<ArrayBuffer>((resolve, reject) => {
+    rejectFn = reject;
+    // 二进制响体，不要按 JSON 解析
+    task = uni.request({
+      url: `${API_BASE_URL}/speech-transcription/edge/speech`,
+      method: "POST",
+      header,
+      data: {
+        text: trimmed,
+        // 发音人；缺省晓晓
+        voice: options.voice ?? DEFAULT_EDGE_TTS_VOICE,
+        // 听书倍速走合成参数
+        speed: options.speed ?? 1,
+        vol: options.vol ?? 5,
+        pitch: options.pitch ?? 0,
+      },
+      responseType: "arraybuffer",
+      timeout: SPEECH_TIMEOUT_MS,
+      success: (res) => {
+        finish(() => {
+          if (res.statusCode === 401) {
+            reject(new ApiError(401, "未登录或登录已过期"));
+            return;
+          }
+          if (res.statusCode >= 200 && res.statusCode < 300 && res.data) {
+            resolve(res.data as ArrayBuffer);
+            return;
+          }
+          reject(new ApiError(res.statusCode || 0, "语音合成失败"));
+        });
+      },
+      fail: (err) => {
+        finish(() => {
+          const msg = err.errMsg ?? "网络错误";
+          // abort 视为取消，不当成致命网络错
+          if (/abort/i.test(msg)) {
+            reject(new ApiError(0, "语音合成已取消"));
+            return;
+          }
+          reject(new ApiError(0, msg));
+        });
+      },
+    });
+    // 超时主动 abort，避免永久 pending
+    setTimeout(() => {
+      finish(() => {
+        try {
+          task?.abort();
+        } catch {
+          // ignore
+        }
+        reject(new ApiError(0, "语音合成超时"));
+      });
+    }, SPEECH_TIMEOUT_MS);
+  });
+  return {
+    promise,
+    abort: () => {
+      finish(() => {
+        try {
+          task?.abort();
+        } catch {
+          // ignore
+        }
+        rejectFn?.(new ApiError(0, "语音合成已取消"));
+      });
+    },
+  };
+}
 ```
 
 #### （6）复刻提示
 
-- 可原样搬：abort 句柄模式。
-- 须替换：URL、鉴权头、音色字段名。
-- 最小验证：合成一句非空文本得到非空 ArrayBuffer。
+换成任意云 TTS 即可，保持「ArrayBuffer + abort」接口形状。
 
 ---
 
-### 4.3 F3：逐句播放器（InnerAudio + 预取）
+### 4.3 F3：BackgroundAudioManager 逐句播放
 
 #### （1）人话说明
 
-播放器拿着整章句子列表：播当前句 → 播完自动下一句 → 章末回调。切倍速时按新语速重新合成当前句，听起来只是变快不变怪。
+拿到 mp3 字节后写到小程序本地临时文件，交给微信「后台音频管理器」播放。一句结束自动下一句；可预取下一句；锁屏控制中心能上一句/下一句。
 
 #### （2）实现思路
 
-故意不用 `BackgroundAudioManager`（P1）。`playGen` 作废过期异步。开播前只保留当前句预取；真正 `play` 后再预取下一句。
+BGM 是全局单例，监听只绑一次。赋值 `src` 即开播。`playGen` 丢弃过期异步。不信任 `onError` 弹 toast。
 
 #### （3）问题与对策
 
-P1/P2/P3/P8。边界：无 `USER_DATA_PATH` 则写临时文件失败。
+对应 P1、P5、P6、P7。
 
 #### （4）实现过程
 
-1. `ensureAudio` 创建 InnerAudio，绑 `onEnded`→`playNext`。
-2. `playCurrent`：通知句变更 → abort 无关 job → `takeBuffer` → 写 mp3 → `play`。
-3. `setRate`：改 rate、abort、重播当前句。
-4. `stop`：升 gen、abort、stop 音频、删临时文件。
+1. `ensureBgm` 绑 ended/play/pause/prev/next
+2. `unlockFromUserGesture` 在点击栈播静音片
+3. `playCurrent` 合成→写文件→元数据→`bgm.src`→预取下一句
 
-#### （5）关键代码（逐行上方注释）
+#### （5）关键代码
 
-- **位置**：`src/services/tts-player.ts` → `setRate` / `playCurrent` 要点
+- **位置**：`src/services/tts-player.ts` → `ensureBgm` / `unlockFromUserGesture` / `playCurrent`
 
 ```ts
-// 倍速变化：只改合成 speed，不改 playbackRate 音调
-setRate(rate: number): void {
-  // 夹紧到 0.5–2
-  const next = clampRate(rate);
-  // 相同则忽略
-  if (next === this.rate) return;
-  // 记下新倍速
-  this.rate = next;
-  // 取消旧倍速下的预取/合成
-  this.abortAllSpeech();
-  if (this.audio) {
-    try {
-      // 播放端永远 1 倍，防变调
-      this.audio.playbackRate = 1;
-    } catch {
-      // 部分基础库只读，忽略
+// 懒创建并只绑定一次全局 BGM 监听
+private ensureBgm(): UniApp.BackgroundAudioManager {
+  if (this.bgm) return this.bgm;
+  const bgm = uni.getBackgroundAudioManager();
+  if (!this.bgmBound) {
+    // 自然播完进下一句
+    bgm.onEnded(() => {
+      void this.playNext();
+    });
+    // 正句开播后同步 UI（解锁静音片不算）
+    bgm.onPlay(() => {
+      if (!this.expectingPlayback) return;
+      this.markPlaying(this.playGen);
+    });
+    // 控制中心暂停 → 会话变 paused
+    bgm.onPause(() => {
+      this.expectingPlayback = false;
+      this.clearPlayWatchdog();
+      this.onPause?.();
+    });
+    bgm.onStop(() => {
+      this.expectingPlayback = false;
+      this.clearPlayWatchdog();
+    });
+    // 锁屏切句
+    bgm.onPrev(() => {
+      this.prevSentence();
+    });
+    bgm.onNext(() => {
+      this.nextSentence();
+    });
+    // 误报极多，绝不据此 toast
+    bgm.onError(() => undefined);
+    this.bgmBound = true;
+  }
+  this.bgm = bgm;
+  return bgm;
+}
+
+// 必须在用户点击的同步栈、任何 await 之前调用
+unlockFromUserGesture(): void {
+  const bgm = this.ensureBgm();
+  this.clearPlayWatchdog();
+  this.applyBgmMeta("听书");
+  // 开发者工具解码静音片易炸，跳过
+  if (isDevtools()) return;
+  const silent = ensureSilentWavPath();
+  if (!silent) return;
+  try {
+    // 赋值 src 即开播；静音仅用于占住播放会话
+    bgm.src = silent;
+  } catch {
+    // ignore
+  }
+}
+
+// 合成并播放当前句
+private async playCurrent(): Promise<void> {
+  // 世代号：切句/停止后丢弃过期结果
+  const gen = ++this.playGen;
+  const sentence = this.sentences[this.sentenceIndex];
+  if (!sentence) {
+    this.onChapterEnd?.();
+    return;
+  }
+  // 先推句文案到 UI
+  this.onSentenceChange?.(this.sentenceIndex);
+  // 只保留当前句已有预取，其余 abort
+  const curKey = this.cacheKey(sentence.text);
+  this.abortSpeechExcept(new Set([curKey]));
+  const bgm = this.ensureBgm();
+  this.expectingPlayback = false;
+  this.clearPlayWatchdog();
+  try {
+    const buf = await this.takeBuffer(sentence.text);
+    if (gen !== this.playGen) return;
+    if (!buf.byteLength) throw new Error("语音合成失败");
+    const prev = this.lastTempPath;
+    // 写入 USER_DATA_PATH 临时 mp3
+    const filePath = this.writeTempMp3(buf);
+    this.lastTempPath = filePath;
+    // 控制中心展示书名/章名/句摘要
+    this.applyBgmMeta(sentence.text || this.chapterTitle || "听书");
+    this.expectingPlayback = true;
+    this.armPlayWatchdog(gen);
+    // 本地文件赋给 BGM，支持锁屏续播
+    bgm.src = filePath;
+    this.removeTemp(prev);
+    // 开播后再预取下一句，避免抢带宽
+    if (gen === this.playGen) {
+      this.prefetchNext(this.sentenceIndex);
+    }
+  } catch {
+    if (gen === this.playGen) {
+      this.onError?.("语音合成失败");
     }
   }
-  // 有句子则按新语速重播当前句
-  if (this.sentences.length) {
-    void this.playCurrent();
-  }
-}
-
-// 写临时文件供 InnerAudio 播放
-private writeTempMp3(buf: ArrayBuffer): string {
-  // 取小程序用户目录
-  const base = userDataPath();
-  // 没有可写路径则失败
-  if (!base) throw new Error("无可用本地路径");
-  // 唯一文件名
-  const filePath = `${base}/tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp3`;
-  // 同步写入二进制
-  uni.getFileSystemManager().writeFileSync(filePath, buf, "binary");
-  // 返回给 audio.src
-  return filePath;
 }
 ```
 
 #### （6）复刻提示
 
-- 可原样搬：playGen、预取策略、倍速重合成。
-- 须替换：若必须锁屏续播，再评估 BGM（需处理系统底栏与自定义条冲突）。
-- 最小验证：两句文本能连播；改 1.5x 后音色不尖。
+非微信平台用各自「后台音频」API；保持「本地文件或 https + 元数据 + 逐句切」模型。
 
 ---
 
@@ -339,470 +473,396 @@ private writeTempMp3(buf: ArrayBuffer): string {
 
 #### （1）人话说明
 
-全局只有一个听书会话。开始听进入 loading，出声变 playing，暂停变 paused，停止回 idle。页面们都读同一份状态。
+整本书听书过程有一份「会话」：正在听哪本、哪章、哪句、倍速、音色、播放状态。阅读页和听书页共用这份会话。
 
 #### （2）实现思路
 
-模块顶层 `ref` + `sessionGen`：每次 start/stop/seek 加一代，过期的 `loadAndPlayChapter` 回调直接 return。
+模块级 `ref` 单例（非 provide/inject），保证跨页一致。`sessionGen` 作废过期异步。
 
 #### （3）问题与对策
 
-P8。边界：空句章尝试跳下一章；再空则 toast 并 stop。
+对应 P6：`unlockFromUserGesture` 必须在第一个 `await` 之前。
 
 #### （4）实现过程
 
-1. `startListen` 升 gen、注入 `getChapter`、loading UI。
-2. `loadAndPlayChapter` 拉章、分句、configure player、`playFrom`。
-3. `stopListen` 升 gen、清 player、`resetSession`。
+1. `startListen` 重置并解锁
+2. `loadAndPlayChapter` 拉章、分句、configure、playFrom
+3. `stopListen` 升 gen、停 BGM、清会话
 
-#### （5）关键代码（逐行上方注释）
+#### （5）关键代码
 
-- **位置**：`src/hooks/useChapterListen.ts` → `startListen`
+- **位置**：`src/hooks/useChapterListen.ts` → `startListen` / `stopListen`
 
 ```ts
-// 对外：从某章某进度开始听书会话
+// 从阅读页「听」进入：建立会话并起播
 export async function startListen(opts: StartListenOptions): Promise<void> {
-  // 作废上一会话的一切异步回调
+  // 作废上一次会话的一切异步回调
   sessionGen += 1;
-  // 立刻停掉旧音频与 pending 合成
+  // 停掉可能残留的 BGM
   ttsPlayer.stop();
-  // 注入阅读页提供的取章函数
+  // 点击栈内解锁（本函数第一个 await 之前）
+  ttsPlayer.unlockFromUserGesture();
+  // 注入取章回调与书信息
   getChapterFn = opts.getChapter;
-  // 记录书信息供通知/UI
   bookId.value = opts.bookId;
   bookTitle.value = opts.bookTitle;
   coverUrl.value = opts.coverUrl ?? "";
   chapterIndex.value = opts.chapterIndex;
-  // 每次新会话倍速回到 1
+  // 每次起播重置为 1x（产品选择）
   rate.value = 1;
-  // 先进入 loading，立刻露出迷你条，再拉章合成
+  // 只同步音色/倍速到播放器，不开播
+  ttsPlayer.setVoice(voice.value, { play: false });
+  ttsPlayer.setRate(1, { play: false });
+  // 先露出迷你条 loading
   status.value = "loading";
-  // 占位文案
   currentSentenceText.value = "准备朗读…";
-  // 章标题稍后由 load 填
   chapterTitle.value = "";
-  // 按滚动进度映射起播句
+  // 之后才 await 拉章/合成
   await loadAndPlayChapter(opts.chapterIndex, {
     scrollPercent: opts.scrollPercent ?? 0,
   });
 }
+
+// 彻底结束听书会话
+export function stopListen(): void {
+  sessionGen += 1;
+  advancing = false;
+  ttsPlayer.stop();
+  getChapterFn = null;
+  resetSession();
+}
 ```
 
 #### （6）复刻提示
 
-- 可原样搬：sessionGen 模式。
-- 须替换：若用 Pinia，仍建议单例 + 代际。
-- 最小验证：快速连点开始/停止，不应出现双音重叠。
+状态可放 Pinia/单例；关键是「跨页共享 + 世代号」。
 
 ---
 
-### 4.5 F5：从当前阅读进度起播
+### 4.5 F5：按阅读进度起播
 
 #### （1）人话说明
 
-用户滑到第 3 屏再点「听」，应从附近句子开始念，而不是章首。
+用户滑到章节中间再点「听」，应从附近句子开始，而不是章首。
 
 #### （2）实现思路
 
-阅读页滚动时维护 `readingScrollPercent`（0–1）；`startListen` 传入；`sentenceIndexFromScrollPercent` 映射句下标（近似均分）。
+阅读页维护 `readingScrollPercent`（0–1），映射为句下标 `floor(p * count)`。
 
 #### （3）问题与对策
 
-设计约束：句长短不一，映射是近似。边界：`p<=0` 首句，`p>=1` 末句。
+边界：p≤0→0；p≥1→末句；单句章→0。
 
 #### （4）实现过程
 
-1. `persistProgress` 写 `readingScrollPercent`。
-2. `onListenTap` 把该值传给 `startListen`。
-3. `loadAndPlayChapter` 无 `fromSentence` 时用该映射。
+1. 滚动时更新 percent
+2. `onListenTap` 传入 `scrollPercent`
+3. `sentenceIndexFromScrollPercent` 算起播句
 
-#### （5）关键代码（逐行上方注释）
+#### （5）关键代码
 
-- **位置**：`useChapterListen.ts` → `sentenceIndexFromScrollPercent`；`reader/index.vue` → `onListenTap` 参数
+- **位置**：`useChapterListen.ts` → `sentenceIndexFromScrollPercent`；`reader` → `onListenTap`
 
 ```ts
-// 章内滚动进度 → 起播句下标
+// 滚动进度 0–1 → 句下标
 function sentenceIndexFromScrollPercent(count: number, scrollPercent: number): number {
-  // 无句
   if (count <= 0) return 0;
-  // 单句
   if (count === 1) return 0;
-  // 夹紧
   const p = Math.min(1, Math.max(0, scrollPercent));
   if (p <= 0) return 0;
   if (p >= 1) return count - 1;
-  // 按句数比例取整
   return Math.min(count - 1, Math.floor(p * count));
 }
 ```
 
-#### （6）复刻提示
-
-- 可原样搬：映射函数。
-- 须替换：进度字段来源（本项目是阅读页滚动推算）。
-- 最小验证：滑到章中再听，首句不是章标题第一句（通常）。
-
----
-
-### 4.6 F6：迷你播控条与倍速菜单
-
-#### （1）人话说明
-
-听书开始后，底栏上方出现迷你条：显示当前句、进度、上句/播放/下句/倍速/展开。点倍速弹出 0.75x–2x 选项。
-
-#### （2）实现思路
-
-组件只绑 `useChapterListen`，不拥有播放器。倍速用菜单而非循环点击（产品定案）。主按钮用 `useThemeAccent`。
-
-#### （3）问题与对策
-
-无独立坑；注意 `@click.stop` 防止点条时触发阅读页 toggleChrome。
-
-#### （4）实现过程
-
-1. `v-if="isActive"` 显示。
-2. 操作区调用 `prev/next/toggle/setListenRate/expandListenPage`。
-3. `watch(isActive/rateMenuOpen)` emit `layout` 让阅读页重测 inset。
-
-#### （5）关键代码（逐行上方注释）
-
-- **位置**：`src/components/ListenMiniBar.vue` 模板动作区
-
-```vue
-    <!-- 播控行：阻止冒泡到阅读页 -->
-    <view class="listen-mini__actions">
-      <!-- 上一句 -->
-      <view class="listen-mini__btn" @click.stop="prevListenSentence">
-        <text>上句</text>
-      </view>
-      <!-- 暂停/播放，主题强调色 -->
-      <view
-        class="listen-mini__btn listen-mini__btn--primary"
-        :style="accentBtnStyle"
-        @click.stop="onToggle"
-      >
-        <text>{{ playLabel }}</text>
-      </view>
-      <!-- 下一句 -->
-      <view class="listen-mini__btn" @click.stop="nextListenSentence">
-        <text>下句</text>
-      </view>
-      <!-- 打开/关闭倍速菜单，按钮上显示当前 Nx -->
-      <view
-        class="listen-mini__btn"
-        :class="{ 'listen-mini__btn--menu-open': rateMenuOpen }"
-        @click.stop="toggleRateMenu"
-      >
-        <text>{{ rateLabel }}</text>
-      </view>
-      <!-- 进独立听书页 -->
-      <view class="listen-mini__btn" @click.stop="expandListenPage">
-        <text>展开</text>
-      </view>
-    </view>
-```
-
-#### （6）复刻提示
-
-- 可原样搬：状态绑定方式。
-- 须替换：UI 组件库与样式 token。
-- 最小验证：迷你条出现且倍速菜单可选。
-
----
-
-### 4.7 F7：独立听书页
-
-#### （1）人话说明
-
-点「展开」进入专门听书页，中间大字显示当前句，底部播控与倍速条；返回阅读页时声音继续。
-
-#### （2）实现思路
-
-`expandListenPage` 若栈顶已是听书页则不重复 navigate。听书页同样 `useChapterListen`，纸张色跟阅读设置。停止用页内「停止听书」。
-
-#### （3）问题与对策
-
-与 F13 配合：从阅读页进听书页时栈内仍有 listen，unload 阅读页不会误停（见 F13）。
-
-#### （4）实现过程
-
-1. 注册路由（F14）。
-2. `navigateTo('/pages/listen/index')`。
-3. 页内绑 status / 句文本 / 播控。
-
-#### （5）关键代码（逐行上方注释）
-
-- **位置**：`useChapterListen.ts` → `expandListenPage`
-
 ```ts
-// 打开独立听书页（已在该页则忽略）
-export function expandListenPage(): void {
-  // 空闲无会话
-  if (status.value === "idle") return;
-  // 当前页面栈
-  const pages = getCurrentPages();
-  // 栈顶页
-  const top = pages[pages.length - 1] as { route?: string } | undefined;
-  // 已在听书页不再 push
-  if (top?.route?.includes("pages/listen/index")) return;
-  // 保留阅读页在栈中，返回不断播
-  uni.navigateTo({ url: "/pages/listen/index" });
-}
-```
-
-#### （6）复刻提示
-
-- 可原样搬：栈判断。
-- 须替换：路由路径与导航 API。
-- 最小验证：展开→返回，迷你条仍在且音频未断。
-
----
-
-### 4.8 F8：底栏「听」与圆形入口
-
-#### （1）人话说明
-
-工具条最右侧「听」：未听时开始，听书中显示「关闭」。底栏收起后右下角圆形「听」用来唤回底栏（不是重新起播）。
-
-#### （2）实现思路
-
-`onListenTap` toggle；`showListenFloat` 在 `listenActive && !chromeVisible`。圆形只 `chromeVisible=true`。
-
-#### （3）问题与对策
-
-无；注意与「回位」FAB 分层：回位在听入口上方。
-
-#### （4）实现过程
-
-1. 工具条绑定 `onListenTap`。
-2. `v-if="showListenFloat"` 圆形入口。
-3. `onListenFloatTap` 开底栏。
-
-#### （5）关键代码（逐行上方注释）
-
-- **位置**：`reader/index.vue` → `onListenTap` 起播分支要点
-
-```ts
-// 底栏「听」：开启会话并注入取章
-await startListen({
-  // 当前书 id
-  bookId: bookId.value,
-  // 书名
-  bookTitle: bookTitle.value,
-  // 封面（播放器元数据预留）
-  coverUrl: bookCoverUrl.value,
-  // 当前章
-  chapterIndex: chapterIndex.value,
-  // 章内阅读进度 → 起播句
-  scrollPercent: readingScrollPercent.value,
-  // 复用阅读页缓存加载章节
-  getChapter: async (index) => {
-    const block = await fetchChapterBlock(index);
-    return {
-      html: block.html,
-      title: block.title,
-      nextIndex: index < chapterTotal.value - 1 ? index + 1 : null,
-    };
-  },
-});
-```
-
-#### （6）复刻提示
-
-- 须替换：工具条布局。
-- 最小验证：听↔关闭两态；收栏后圆形可唤回。
-
----
-
-### 4.9 F9：正文跟读滚屏（块段定位）
-
-#### （1）人话说明
-
-念到某一句时，阅读区应自动滚到能看见这句话的位置。不能靠在 HTML 里插几千个锚点（会卡），而是：听书时把**当前章**切成若干段落块，每块包在带 id 的原生盒子里再量位置。
-
-#### （2）实现思路
-
-- `buildChapterHtmlSegments` 预切段（≤40）。
-- 仅 `listenActive && 本章 === 听书章` 时分段渲染 `#ls-章-段`。
-- `segmentIndexForChar(sent.start)` → 量矩形 → 段内 frac 微调 → `applyScrollTop`。
-- 失败则整章字符占比兜底。
-
-#### （3）问题与对策
-
-P4、P5。边界：切段失败/查询不到节点时走兜底。
-
-#### （4）实现过程
-
-1. `fetchChapterBlock` 带 `segments`。
-2. 模板 `isListenSegmentedChapter` 分支。
-3. 句切换 `watch` → `scrollToListenSentence`。
-4. `scrollToListenSegment` 计算 target。
-
-#### （5）关键代码（逐行上方注释）
-
-- **位置**：`listen-text.ts` → `buildChapterHtmlSegments`；`reader` → `isListenSegmentedChapter`
-
-```ts
-// 是否对某一章启用块段 mp-html（仅听书当前章）
-function isListenSegmentedChapter(chapterIdx: number): boolean {
-  return (
-    // 正在听书
-    listenActive.value &&
-    // 就是当前播放章
-    listenChapterIndex.value === chapterIdx &&
-    // 已有切段数据
-    (chapterBlocks.value.find((b) => b.index === chapterIdx)?.segments.length ?? 0) > 0
-  );
-}
-```
-
-```ts
-// 把章节切成带纯文本坐标的块段
-export function buildChapterHtmlSegments(html: string, maxSeg = 40): ChapterHtmlSegment[] {
-  // 全章纯文本（与分句同一清洗）
-  const fullPlain = stripMarkdownForTts(htmlToPlainText(html));
-  // 按块级标签切开，再合并到上限，避免上百个组件
-  const chunks = mergeHtmlChunks(splitHtmlIntoBlocks(html), maxSeg);
-  // … 将每段 plain 对齐到 fullPlain 的 start/end 后返回 …
-  return segs;
-}
-```
-
-#### （6）复刻提示
-
-- 可原样搬：切段 + 原生 id 思路（任何富文本组件都适用）。
-- 须替换：渲染组件（本项目 mp-html）。
-- 最小验证：听书中句切换，视口上半区出现对应段落。
-
----
-
-### 4.10 F10：手动打断跟读与回位
-
-#### （1）人话说明
-
-跟读时若用户自己上下滑超过约 36px，停止自动滚，并显示「回位」。点回位恢复自动跟读并立刻滚到当前句。
-
-#### （2）实现思路
-
-不依赖 touch 事件（enhanced scroll-view 常丢），只看 `@scroll` 相对 `listenFollowBaselineTop` 的位移。程序滚期间用时间窗忽略打断。
-
-#### （3）问题与对策
-
-P6。回位位置：底栏开→挂 chrome 上沿；底栏关→挂圆形「听」上方。
-
-#### （4）实现过程
-
-1. `onScroll` → `onListenScrollWhileFollowing`。
-2. 超阈值 → `listenAutoFollow=false`。
-3. `onListenFollowTap` 置 true 并 `scrollToListenSentence(true)`。
-
-#### （5）关键代码（逐行上方注释）
-
-- **位置**：`reader/index.vue` → `onListenScrollWhileFollowing`
-
-```ts
-// 跟读中根据滚动位移判断是否用户手动拉开
-function onListenScrollWhileFollowing(top: number) {
-  // 未听书或已打断
-  if (!listenActive.value || !listenAutoFollow.value) return;
-  // 程序滚 / 短时抑制窗内不判打断
-  if (isListenScrollIgnored()) return;
-  // 相对上次跟读锚点超过阈值 → 用户在拖
-  if (Math.abs(top - listenFollowBaselineTop) >= LISTEN_BREAK_FOLLOW_PX) {
-    // 关闭自动跟读，露出回位钮
-    breakListenAutoFollow();
+// 阅读页：未在听则起播，已在听则关闭
+async function onListenTap() {
+  if (!bookId.value || !hasContent.value) return;
+  if (listenActive.value) {
+    stopListen();
+    void nextTick(() => setTimeout(measureChromeInsets, 80));
+    return;
+  }
+  bottomPanel.value = null;
+  try {
+    await startListen({
+      bookId: bookId.value,
+      bookTitle: bookTitle.value,
+      coverUrl: bookCoverUrl.value,
+      chapterIndex: chapterIndex.value,
+      // 用当前阅读位置映射起播句
+      scrollPercent: readingScrollPercent.value,
+      getChapter: async (index) => {
+        const block = await fetchChapterBlock(index);
+        return {
+          html: block.html,
+          title: block.title,
+          nextIndex: index < chapterTotal.value - 1 ? index + 1 : null,
+        };
+      },
+    });
+    void nextTick(() => {
+      setTimeout(measureChromeInsets, 80);
+      void scrollToListenSentence(true);
+    });
+  } catch (err) {
+    uni.showToast({
+      title: err instanceof Error ? err.message : "听书启动失败",
+      icon: "none",
+    });
   }
 }
 ```
 
 #### （6）复刻提示
 
-- 可原样搬：基线 + 阈值 + 时间窗。
-- 最小验证：跟读中猛滑出现回位；点回位正文回到当前句。
+若有更准的「视口首句」检测可替换 percent 映射。
 
 ---
 
-### 4.11 F11：听书中不收栏；目录跳章续听
+### 4.6 F6：迷你播控条
 
 #### （1）人话说明
 
-听书时希望底栏迷你条一直在，所以滚动不再自动藏底栏。在目录点另一章，正文跳过去并从该章开头继续听。
+听书进行中，阅读页底栏上方出现一条：当前句、进度、上句/播放/下句、倍速、展开。
 
 #### （2）实现思路
 
-`onScroll` 里 `hideBottomChrome` 条件加 `!listenActive`。`goChapter` 若正在听则 `seekListenChapter(index, 0)`。
+`ListenMiniBar` 只消费 `useChapterListen`；按钮用 `wd-button`（soft/base）拿组件自带按下态；等宽用 flex 格子包裹。
 
 #### （3）问题与对策
 
-P7。
+`custom-class` 不能当 flex 子项等分 → 外层 `listen-mini__cell` 等分。
 
 #### （4）实现过程
 
-1. 改滚动收栏条件。
-2. `goChapter` 记录 `resumeListenAtChapter` 并 seek。
+1. `isActive` 时渲染
+2. 语速菜单 `setListenRate`
+3. 播控调 hook；正文点击 `expandListenPage`
 
-#### （5）关键代码（逐行上方注释）
+#### （5）关键代码
+
+- **位置**：`src/components/ListenMiniBar.vue`（结构摘要）
+
+```vue
+<!-- 仅有听书会话时显示 -->
+<wd-config-provider v-if="isActive" :theme="dark ? 'dark' : 'light'" :theme-vars="miniThemeVars">
+  <view class="listen-mini" @click.stop>
+    <!-- 点摘要区展开听书页 -->
+    <view class="listen-mini__main" @click="expandListenPage">
+      <text class="listen-mini__chapter">{{ chapterTitle || bookTitle || "听书" }}</text>
+      <text class="listen-mini__progress">{{ progressLabel }}</text>
+      <text class="listen-mini__sentence">{{ currentSentenceText || "准备朗读…" }}</text>
+    </view>
+    <!-- 倍速条：等分格子 + wd-button -->
+    <view v-if="rateMenuOpen" class="listen-mini__rates">
+      <view v-for="r in rates" :key="r" class="listen-mini__cell">
+        <wd-button
+          type="primary"
+          :variant="rate === r ? 'base' : 'soft'"
+          block
+          size="small"
+          custom-class="listen-mini__btn"
+          @click.stop="pickRate(r)"
+        >
+          {{ r }}x
+        </wd-button>
+      </view>
+    </view>
+    <!-- 此处省略：上句 / 播放暂停 / 下句 / 倍速入口 / 展开，同样 cell+wd-button -->
+  </view>
+</wd-config-provider>
+```
+
+#### （6）复刻提示
+
+任意 UI 库按钮即可；保持「等分宽度 + 按下反馈」。
+
+---
+
+### 4.7 F7：独立听书页与 Edge 音色
+
+#### （1）人话说明
+
+「展开」进入大字听书页：当前句可滚动阅读；底部播控、语速、Edge 音色抽屉。选过的音色会记住。
+
+#### （2）实现思路
+
+页只绑同一 hook；音色表在 `edgeTts.ts`；本地 key `ebook_edge_tts_voice`。抽屉用 `wd-popup` + `root-portal` 避免被页面裁切。
+
+#### （3）问题与对策
+
+微信 `overflow:hidden` 会裁自绘 fixed 层 → 用组件 popup + root-portal。
+
+#### （4）实现过程
+
+1. `expandListenPage` navigateTo
+2. 页内展示 `currentSentenceText`（scroll-view，padding 在内容层让滚动条贴边）
+3. `setListenVoice` 校验、存 storage、player 重合成
+
+#### （5）关键代码
+
+- **位置**：`edgeTts.ts` 默认与列表；`setListenVoice`
 
 ```ts
-// 滚动收栏：听书中跳过
-} else if (
-  chromeVisible.value &&
-  !listenActive.value &&
-  Math.abs(top - lastScrollTopForChrome) >= SCROLL_HIDE_CHROME_PX
-) {
-  // 非听书才自动藏底栏
-  hideBottomChrome();
-  lastScrollTopForChrome = top;
-}
+// 与 Web / 后端一致的默认发音人
+export const DEFAULT_EDGE_TTS_VOICE = "zh-CN-XiaoxiaoNeural";
 
-// 目录跳章：听书则从目标章章首续播
-function goChapter(index: number) {
-  if (index < 0 || index >= chapterTotal.value) return;
-  const resumeListenAtChapter = listenActive.value;
-  void (async () => {
-    await openAtChapter(index, 0);
-    if (resumeListenAtChapter) {
-      await seekListenChapter(index, 0);
-      void nextTick(() => setTimeout(measureChromeInsets, 80));
-    }
-  })();
+// 本地存储 key
+const VOICE_STORAGE_KEY = "ebook_edge_tts_voice";
+
+// 切换音色并持久化
+export function setListenVoice(next: string): void {
+  // 非法 id 或未变化则忽略
+  if (!isEdgeTtsVoiceId(next) || next === voice.value) return;
+  voice.value = next;
+  try {
+    uni.setStorageSync(VOICE_STORAGE_KEY, next);
+  } catch {
+    // ignore
+  }
+  // 播放器按新音色重合成当前句
+  ttsPlayer.setVoice(next);
+  if (status.value !== "idle") status.value = "playing";
 }
 ```
 
 #### （6）复刻提示
 
-- 最小验证：听书时滚动底栏仍在；目录换章后从新章开头出声。
+音色表可缩成你们支持的子集；存储 key 按产品命名。
 
 ---
 
-### 4.12 F12：章末自动下一章
+### 4.8 F8：底栏「听」与收栏圆形入口
 
 #### （1）人话说明
 
-一章最后一句播完，自动加载下一章从第一句继续；没有下一章则提示听完并停止。
+底栏最右侧是「听/关闭」开关。听书中若收起底栏，右下角保留圆形「听」以便唤回。
 
 #### （2）实现思路
 
-player `onChapterEnd` → `advanceChapter`；用 `advancing` 锁防重入；`getChapter(current).nextIndex`。
+`listenActive` 驱动文案与高亮；`onListenFloatTap` 打开 chrome，不重复起播。
 
 #### （3）问题与对策
 
-空章在 `loadAndPlayChapter` 内已尝试跳下一章。
+无；注意与「回位」FAB 叠层顺序。
 
 #### （4）实现过程
 
-1. configure 时挂 `onChapterEnd`。
-2. `advanceChapter` 取 next 或 stop。
+见 F5 `onListenTap`；浮动钮另绑 `chromeVisible = true`。
 
-#### （5）关键代码（逐行上方注释）
+#### （5）关键代码
+
+（入口逻辑见 §4.5；浮动钮略，行为：显示底栏。）
+
+#### （6）复刻提示
+
+开关与起播务必同一入口，避免双会话。
+
+---
+
+### 4.9 F9：跟读滚屏
+
+#### （1）人话说明
+
+朗读时，正文自动滚到当前句附近，用户不用自己找。
+
+#### （2）实现思路
+
+听书当前章把 HTML 切成块段原生 view（`#ls-*`），用句的 `start` 映射块段再 `scroll-into-view` / 算 offset；避免整章句锚导致 setData 过大（P8）。
+
+#### （3）问题与对策
+
+对应 P8。
+
+#### （4）实现过程
+
+1. `buildChapterHtmlSegments`
+2. watch `listenSentenceIndex` → `scrollToListenSentence`
+3. 仅听书当前章启用分段模式
+
+#### （5）关键代码
+
+- **位置**：`listen-text.ts` → `buildChapterHtmlSegments` / `segmentIndexForChar`（细节见 [reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md)）
 
 ```ts
+// 字符偏移落在哪一段（跟读定位入口）
+export function segmentIndexForChar(segments: ChapterHtmlSegment[], charOffset: number): number {
+  // 空段表 → 0
+  if (!segments.length) return 0;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]!;
+    // 落在 [start, end) 即命中
+    if (charOffset >= seg.start && charOffset < seg.end) return i;
+  }
+  // 超出则钳到最后一段
+  return segments.length - 1;
+}
+```
+
+#### （6）复刻提示
+
+可先用「整章百分比滚动」做 MVP，再升级块段。
+
+---
+
+### 4.10 F10：打断跟读与回位
+
+#### （1）人话说明
+
+用户自己滑正文时，不要再强制拽回去；给一个「回位」按钮，想跟读时再点。
+
+#### （2）实现思路
+
+`listenAutoFollow` 开关；跟读滚动时记位置，用户滚超过阈值则 `breakListenAutoFollow`；回位恢复开关并 `scrollToListenSentence(true)`。
+
+#### （3）问题与对策
+
+对应 P9；程序滚动要用护栏避免误判为用户手势。
+
+#### （4）实现过程
+
+详见 [reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md)。
+
+#### （5）关键代码
+
+（篇幅见专项 impl；核心标志位 `listenAutoFollow` + 回位 FAB。）
+
+#### （6）复刻提示
+
+阈值按设备调试；程序滚动务必 suppress 手势检测。
+
+---
+
+### 4.11 F11：章末切章
+
+#### （1）人话说明
+
+一章最后一句念完，自动进下一章继续；没有下一章就提示听完并停止。
+
+#### （2）实现思路
+
+`onChapterEnd` → `advanceChapter`；用 `getChapter` 返回的 `nextIndex`；`advancing` 防重入。
+
+#### （3）问题与对策
+
+空章则跳过继续找下一章（`loadAndPlayChapter` 内）。
+
+#### （4）实现过程
+
+1. player 末句 `onChapterEnd`
+2. `advanceChapter` 取 next
+3. null → toast + stop；否则 `loadAndPlayChapter(next, { fromSentence: 0 })`
+
+#### （5）关键代码
+
+```ts
+// 章播完：有下一章则章首续听
 async function advanceChapter(): Promise<void> {
-  // 防章末回调重入
   if (advancing || !getChapterFn) return;
   advancing = true;
   try {
-    // 用当前章 payload 读 nextIndex
     const chapter = await getChapterFn(chapterIndex.value);
     const next = chapter.nextIndex;
     if (next == null) {
@@ -810,7 +870,6 @@ async function advanceChapter(): Promise<void> {
       stopListen();
       return;
     }
-    // 下一章从第 0 句
     await loadAndPlayChapter(next, { fromSentence: 0 });
   } catch {
     uni.showToast({ title: "加载下一章失败", icon: "none" });
@@ -823,47 +882,104 @@ async function advanceChapter(): Promise<void> {
 
 #### （6）复刻提示
 
-- 最小验证：短章连听能跨章；最后一章结束停播。
+`nextIndex` 由你们的目录/章节 API 提供即可。
 
 ---
 
-### 4.13 F13：离开阅读页时的停播策略
+### 4.12 F12：锁屏续播与退出停播
 
 #### （1）人话说明
 
-从阅读页返回书架应停播；但「展开听书页」时阅读页可能 unload/hide，不能误停。
+手机锁屏时希望继续听；但用户关掉小程序或跳到别的小程序时，不要在后台一直念。
 
 #### （2）实现思路
 
-`stopListenIfLeavingReader`：页面栈里若还有 `pages/listen/index` 则不停，否则 `stopListen`。在阅读页 `onUnload`（及项目里挂接的离开钩子）调用。
+- 续播：BGM + `manifest.requiredBackgroundModes: ["audio"]`
+- 停播：`wx.onAppHide` 看 `reason`——`0` 退出、`1` 进其他小程序才 `stopListen`；`3` 等（含锁屏）不停
 
 #### （3）问题与对策
 
-设计约束：依赖页面栈 route 字符串。
+对应 P1–P3。须基础库 ≥ 3.5.7 才有可靠 `reason`。
 
 #### （4）实现过程
 
-1. 遍历 `getCurrentPages()`。
-2. 无听书页 → stop。
+1. manifest 声明 audio
+2. player 用 BGM
+3. App `onLaunch` 里注册 `wx.onAppHide`
 
-#### （5）关键代码（逐行上方注释）
+#### （5）关键代码
+
+- **位置**：`src/App.vue`；`src/manifest.json`
 
 ```ts
+onLaunch(() => {
+  // 隐藏原生 tabBar，改用自定义
+  uni.hideTabBar({ animation: false });
+  applyPageChrome();
+  // 取微信原生 API（uni onHide 不一定带 reason）
+  const wxApi = (
+    globalThis as typeof globalThis & {
+      wx?: { onAppHide?: (fn: (opt: { reason?: number }) => void) => void };
+    }
+  ).wx;
+  // 0 退出小程序 · 1 进其他小程序 → 停听书；锁屏等为 3 → 续播
+  wxApi?.onAppHide?.((opt) => {
+    const reason = opt?.reason;
+    if (reason === 0 || reason === 1) stopListen();
+  });
+});
+```
+
+```json
+{
+  "mp-weixin": {
+    "appid": "wxbc334debd8ed8b2d",
+    "requiredBackgroundModes": ["audio"]
+  }
+}
+```
+
+#### （6）复刻提示
+
+正式版后台音频能力可能要微信公众平台开通/审核；无 `reason` 的老基础库无法完美兼顾两者。
+
+---
+
+### 4.13 F13：离开阅读页停播
+
+#### （1）人话说明
+
+用户从阅读页返回书架时，若没有打开独立听书页，应停止播放，避免「人走了声音还在」。
+
+#### （2）实现思路
+
+`onUnload` 调 `stopListenIfLeavingReader`：检查页面栈是否仍有 `pages/listen/index`。
+
+#### （3）问题与对策
+
+展开听书页后再返回阅读页——栈里曾有 listen；unload 阅读页时若 listen 仍在栈则不停（可按产品调整）。
+
+#### （4）实现过程
+
+```ts
+// 阅读页卸载：栈上没有听书页才停
 export function stopListenIfLeavingReader(): void {
   const pages = getCurrentPages();
   const hasListen = pages.some((p) => {
     const route = (p as { route?: string }).route ?? "";
     return route.includes("pages/listen/index");
   });
-  // 栈内还有听书页：用户只是进了展开页，保持会话
   if (!hasListen) stopListen();
 }
 ```
 
+#### （5）关键代码
+
+同上。
+
 #### （6）复刻提示
 
-- 须替换：路由名判断。
-- 最小验证：阅读→听书页→返回阅读不断；阅读→返回书架停播。
+若希望「进听书页也随阅读页卸载停」，直接 `stopListen()` 即可。
 
 ---
 
@@ -871,106 +987,70 @@ export function stopListenIfLeavingReader(): void {
 
 #### （1）人话说明
 
-听书页要在小程序里注册；manifest 声明 audio 相关后台模式（历史/能力声明；当前播放实现是页内 InnerAudio）。
+听书页要注册进小程序；后台播放要在配置里声明 audio 模式。
 
 #### （2）实现思路
 
-`pages.json` 增加 `pages/listen/index`（custom 导航）。`mp-weixin.requiredBackgroundModes: ["audio"]`。
+`pages.json` 增加 `pages/listen/index`（custom 导航）；`manifest` 见 F12。
 
 #### （3）问题与对策
 
-无；若移除 InnerAudio 改 BGM，该声明才真正关键锁屏续播。
+无。
 
 #### （4）实现过程
 
-1. 配路由。
-2. 配 manifest。
+注册页面 → 声明 backgroundModes → 真机验证锁屏。
 
-#### （5）关键代码（逐行上方注释）
+#### （5）关键代码
 
 ```json
 {
   "path": "pages/listen/index",
   "style": {
     "navigationStyle": "custom",
-    "navigationBarTitleText": "听书",
-    "backgroundColor": "#ffffff"
+    "navigationBarTitleText": "听书"
   }
 }
 ```
 
-```json
-    "usingComponents": true,
-    "requiredBackgroundModes": ["audio"]
-```
-
 #### （6）复刻提示
 
-- 最小验证：`navigateTo` 听书页不报页不存在。
+路径与 `expandListenPage` 的 url 保持一致。
 
 ---
 
-### 4.15 F15：当前播放句正文高亮
+### 4.15 F15：句级高亮
 
 #### （1）人话说明
 
-念到哪一句，阅读正文里那一句就带半透明琥珀色底。切到下一句时，旧高亮消失、新句亮起。停听后高亮全部去掉。
+正在朗读的那一句，在正文里用琥珀色背景标出来；换句时高亮跟着走。
 
 #### （2）实现思路
 
-不在整章 HTML 上动刀。沿用听书块段：算出当前句所在段 → 用干净 `seg.html` 包一层 `<span data-listen-hl>` → **只对该段** `setContent`。换段时先把上一段刷回干净 HTML。高亮与是否自动跟读无关。
+只在当前句所在块段 HTML 上注入 `<span data-listen-hl="1">`，对该块 `mp-html.setContent`；禁止整章重灌（P8）。详情见 [reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)。
 
 #### （3）问题与对策
 
-对应 P9。边界：纯文本匹配失败（极端拆字标签）则该句无高亮，不影响播放；实例未就绪时短延迟重试一次。
+对应 P8；停听时 `stripListenHighlight`。
 
 #### （4）实现过程
 
-1. `listen-text`：`findPlainRangeInHtml` + `injectListenSentenceHighlight` / `stripListenHighlight`。
-2. 阅读页：`applyListenSentenceHighlight` / `clearListenSentenceHighlight`。
-3. `watch` 句索引与 `listenActive`；`refreshMpHtmlStyles` 末尾重刷。
+1. watch `listenSentenceIndex`
+2. `segmentIndexForChar(sentence.start)`
+3. `injectListenSentenceHighlight` → `setContent`
 
-#### （5）关键代码（逐行上方注释）
-
-- **位置**：`src/pages/reader/index.vue` → `applyListenSentenceHighlight`；详解见 [reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)
+#### （5）关键代码
 
 ```ts
-// 句级高亮：只重绘当前句所在块段
-function applyListenSentenceHighlight(retry = true) {
-  // 未听书则清高亮
-  if (!listenActive.value) {
-    clearListenSentenceHighlight();
-    return;
-  }
-  // 必须已是听书分段章
-  const chap = listenChapterIndex.value;
-  if (!isListenSegmentedChapter(chap)) return;
-  // 取当前句与所在段
-  const block = chapterBlocks.value.find((b) => b.index === chap);
-  const meta = listenSentences.value[listenSentenceIndex.value];
-  if (!block?.segments.length || !meta?.text) return;
-  const si = segmentIndexForChar(block.segments, meta.start);
-  const seg = block.segments[si];
-  if (!seg) return;
-  // 从干净原文注入高亮 span
-  const highlighted = injectListenSentenceHighlight(
-    seg.html,
-    meta.text,
-    listenHighlightMarkStyle(),
-  );
-  // 仅对该段 mp-html setContent
-  setListenSegContent(chap, si, highlighted);
-  listenHlChap = chap;
-  listenHlSeg = si;
+// 去掉听书高亮包裹，保留正文
+export function stripListenHighlight(html: string): string {
+  return html.replace(/<span\s+[^>]*data-listen-hl="1"[^>]*>([\s\S]*?)<\/span>/gi, "$1");
 }
 ```
 
 #### （6）复刻提示
 
-- 可原样搬：段内注入 + 单段 setContent。
-- 须替换：高亮色、富文本组件 API。
-- 最小验证：连切三句，高亮跟随且无整章卡顿。
-- 改动追溯：[reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)
+高亮标签须在你们的富文本组件白名单内（本项目用 span + 内联 style）。
 
 ---
 
@@ -978,97 +1058,76 @@ function applyListenSentenceHighlight(retry = true) {
 
 ### 5.1 前置条件
 
-- uni-app Vue3 + 微信小程序（或等价：可写本地文件 + 页内音频）。
-- 后端提供「文本→音频二进制」接口（本项目为 Edge TTS）。
-- 宿主已有：登录 token、书籍章节 HTML API、阅读页滚动容器。
-- 不要把真实密钥写进代码；用环境变量配 API 基址。
+| 项     | 说明                                                                       |
+| ------ | -------------------------------------------------------------------------- |
+| 运行时 | uni-app 或原生微信小程序                                                   |
+| 后端   | 提供 Edge（或等价）TTS，返回 mp3 `arraybuffer`                             |
+| 登录   | 若接口需鉴权，请求带 token                                                 |
+| 微信   | `requiredBackgroundModes: ["audio"]`；基础库建议 ≥ 3.5.7（AppHide reason） |
+| 正式版 | 后台音频能力按微信平台要求开通/审核                                        |
 
-### 5.2 推荐建造顺序（按依赖）
+### 5.2 建造顺序（依赖从底向上）
 
-1. **Step 1 — 分句**：实现 `htmlToPlainText` + `chapterToSentences`；验收：固定 HTML 句数正确。
-2. **Step 2 — TTS**：`synthesizeEdgeSpeech` + abort；验收：拿到 arraybuffer。
-3. **Step 3 — Player**：InnerAudio 逐句 + 倍速重合成 + 预取；验收：两句连播、改速不变调。
-4. **Step 4 — Session hook**：start/stop/pause + sessionGen；验收：连点无双音。
-5. **Step 5 — 迷你条 UI**：绑 hook；验收：可见播控。
-6. **Step 6 — 听书页 + 路由**：验收：展开/返回不断播。
-7. **Step 7 — 阅读页入口**：注入 getChapter、进度起播；验收：F5/F8。
-8. **Step 8 — 跟读块段 + 回位**：验收：F9/F10。
-9. **Step 9 — 句级高亮（单段 setContent）**：验收：F15。
-10. **Step 10 — chrome/目录/离开**：验收：F11–F13。
+1. `listen-text`：分句 +（可选）块段/高亮
+2. `edgeTts` 常量 + `tts` 合成
+3. `tts-player`（BGM）
+4. `useChapterListen` 会话
+5. 迷你条 UI
+6. 听书页 UI + 音色
+7. `pages.json` / `manifest` / `App onAppHide`
+8. 阅读页挂入口、跟读、高亮
 
 ### 5.3 最小可运行切片（MVP）
 
-先做 **F1 + F2 + F3 + F4 + F8（仅开始/停止）+ F5**：阅读页一点就能出声。  
-增强顺序建议：F6 → F12 → F7 → F9 → F10 → F15 → F11 → F13。
+只做 **F1 + F2 + F3 + F4 + F5 + F8 + F14** 即可：「点听 → 出声 → 暂停/停止」。  
+再加 F6 迷你条、F12 锁屏/退出、F9–F10 跟读、F7 音色、F15 高亮。
 
-### 5.4 平台差异清单
+### 5.4 抽象 ↔ 平台替身
 
-| 本项目用法                  | 可移植抽象      | 其他项目常见替身            |
-| --------------------------- | --------------- | --------------------------- |
-| `uni.request` + arraybuffer | 下载音频二进制  | fetch → arrayBuffer         |
-| `InnerAudioContext`         | 页内短音频播放  | HTMLAudioElement / AVPlayer |
-| `USER_DATA_PATH` 写 mp3     | 二进制→可播 URI | blob: URL / 缓存目录        |
-| `getCurrentPages`           | 路由栈判断      | vue-router / 导航栈 API     |
-| mp-html + 原生 view 段      | 富文本跟读定位  | Web 用 DOM Range / 段落 ref |
-| 模块级 Vue ref 单例         | 全局听书会话    | Pinia/Redux store           |
+| 本项目                    | 抽象动作         | 其他栈常见写法                                             |
+| ------------------------- | ---------------- | ---------------------------------------------------------- |
+| `BackgroundAudioManager`  | 后台长音频       | iOS AVAudioSession + 后台 mode；Android Foreground Service |
+| `wx.onAppHide.reason`     | 区分退出与锁屏   | 各自生命周期，多数无法完美区分                             |
+| `uni.request arraybuffer` | 拉音频字节       | fetch → arrayBuffer                                        |
+| `USER_DATA_PATH` 临时文件 | 给播放器本地路径 | 缓存目录 / blob URL（H5）                                  |
+| `chapterToSentences`      | HTML→句          | 任意句界库                                                 |
 
-### 5.5 验收用例（对应功能点）
+### 5.5 验收用例（对应 F）
 
-- [ ] F1：章节能分成多句；空章有提示
-- [ ] F2/F3：出声；快速下句无大量 pending
-- [ ] F4：开始/暂停/停止状态正确
-- [ ] F5：章中起播非章首
-- [ ] F6：迷你条播控与倍速菜单；不变调
-- [ ] F7：展开/返回会话不断
-- [ ] F8：听/关闭；圆形入口唤回底栏
-- [ ] F9：句切换正文跟读到视口上半区
-- [ ] F10：手滑出回位；点回位恢复
-- [ ] F15：当前句琥珀色高亮，切句跟随，停听清除
-- [ ] F11：听书滚动不收栏；目录跳章续听
-- [ ] F12：章末自动下一章；末章听完停止
-- [ ] F13：回书架停播；经听书页返回不停
-- [ ] 回归：未听书时阅读滚动收栏、换肤仍正常
+- [ ] F5/F8：章中滚动后点「听」，从附近句起播，迷你条出现
+- [ ] F3/F4：能暂停/继续/上句/下句
+- [ ] F3：切换 1.25x，音色不变尖
+- [ ] F7：听书页换音色，再次进入仍是所选音色
+- [ ] F11：章末自动进下一章；末章 toast 停播
+- [ ] F12：锁屏续播；控制中心可切句；胶囊关闭后停止
+- [ ] F9/F10：跟读滚动；手滑出回位；点回位恢复
+- [ ] F15：当前句琥珀色高亮随切句移动
+- [ ] F13：从阅读页回书架（无听书页）声音停止
 
-### 5.6 常见移植失误
+### 5.6 移植时易忘点
 
-1. 用 `playbackRate` 做倍速 → 声音变尖（P2）。
-2. 用 BGM 却不处理系统底栏 → 盖住自定义迷你条（P1）。
-3. 切句不 abort → 网络面板堆请求、串音（P3）。
-4. 每句插入 HTML 锚点 → setData 爆炸卡顿（P4）。
-5. 句高亮对整章 setContent → 再次卡顿（P9）。
-6. 无 sessionGen → 停止后旧合成仍 `setContent`/播下一句（P8）。
-7. 跟读用程序滚却无忽略窗 → 一直误出「回位」（P6）。
-8. 离开阅读页无条件 stop → 展开听书页被误杀（F13）。
+| 忘记做                           | 后果               |
+| -------------------------------- | ------------------ |
+| 未声明 `requiredBackgroundModes` | 锁屏/后台易停      |
+| `App.onHide` 无差别 stop         | 锁屏也被停         |
+| 未在点击栈 `unlock`              | 体验版首次起播失败 |
+| 倍速用 playbackRate              | 声音变尖           |
+| 切句不 abort 合成                | 网络请求堆积       |
+| 整章句锚 setContent              | setData 过大卡顿   |
+| 信任音频 onError toast           | 能播仍弹失败       |
 
 ---
 
-## 6. 验证要点（建议）
+## 6. 相关文档
 
-- [ ] 主路径：听 → 出声 → 迷你条 → 跟读 + 句高亮
-- [ ] 边界：空章、末章、弱网、未登录 401
-- [ ] 失败：合成失败 toast 并 paused，可再点播放
-- [ ] 并存：听书中改字号/主题，分段章样式与高亮仍更新
+| 文档                                                                         | 关系                     |
+| ---------------------------------------------------------------------------- | ------------------------ |
+| [reader-listen-hybrid-impl.md](./reader-listen-hybrid-impl.md)               | 混合形态落地时的改前改后 |
+| [reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md) | 跟读/回位/块段性能       |
+| [reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)         | 句级高亮细节             |
 
 ---
 
-## 7. 影响与边界（必填，放文末）
+## 7. 文档维护说明
 
-### 7.1 对本项目其他功能的影响
-
-- **是否影响已有功能点**：局部 — 阅读页底栏多「听」与迷你条高度，chrome inset 更频繁测量；听书句切换多小段 setContent
-- **是否影响既有正常逻辑**：局部 — 听书当前章 DOM 改为多段 mp-html；非听书路径仍整章单实例
-
-### 7.2 影响点明细
-
-| #   | 对象       | 方式                             | 程度 | 说明与回归                         |
-| --- | ---------- | -------------------------------- | ---- | ---------------------------------- |
-| 1   | 阅读页底栏 | 听书时增高                       | 中   | 开停听书确认正文 padding           |
-| 2   | 滚动收栏   | 听书中禁用自动收                 | 中   | 非听书仍自动收                     |
-| 3   | 目录跳章   | 听书时附带 seek                  | 中   | 听/不听两种跳章                    |
-| 4   | 网络与登录 | TTS 需鉴权                       | 中   | 未登录提示                         |
-| 5   | 性能       | 听书章多段挂载；句高亮只刷当前段 | 中   | 起播一次性重组可接受；切句勿整章灌 |
-| 6   | 句高亮     | 琥珀底跟随当前句                 | 中   | 连切句与停听清理                   |
-
-### 7.3 文档范围外的相邻能力
-
-连续章节流、主题换肤、进度同步、EPUB 后端解析等见其它 `docs/*-impl.md`；句高亮专项见 [reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)。
+本文以仓库**当前最终代码**为准（BGM 播放、Edge 音色、AppHide reason 停播）。若播放器改回 `InnerAudioContext` 或停播策略变化，须同步改 §0.1、§2、§4.3、§4.12 与验收用例。
