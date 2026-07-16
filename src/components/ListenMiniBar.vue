@@ -24,43 +24,8 @@
         </view>
       </view>
 
+      <!-- 倍速 | 上段 | 播放 | 下段 | 听书页 -->
       <view class="listen-mini__actions">
-        <view class="listen-mini__cell">
-          <wd-button
-            type="primary"
-            variant="soft"
-            block
-            size="small"
-            custom-class="listen-mini__btn"
-            @click.stop="prevListenSentence"
-          >
-            上句
-          </wd-button>
-        </view>
-        <view class="listen-mini__cell">
-          <wd-button
-            type="primary"
-            variant="base"
-            block
-            size="small"
-            custom-class="listen-mini__btn"
-            @click.stop="onToggle"
-          >
-            {{ playLabel }}
-          </wd-button>
-        </view>
-        <view class="listen-mini__cell">
-          <wd-button
-            type="primary"
-            variant="soft"
-            block
-            size="small"
-            custom-class="listen-mini__btn"
-            @click.stop="nextListenSentence"
-          >
-            下句
-          </wd-button>
-        </view>
         <view class="listen-mini__cell">
           <wd-button
             type="primary"
@@ -79,10 +44,57 @@
             variant="soft"
             block
             size="small"
+            custom-class="listen-mini__btn listen-mini__btn--icon"
+            @click.stop="prevListenSentence"
+          >
+            <AppIcon name="fast-backward" :size="22" :color="softIconColor" />
+          </wd-button>
+        </view>
+        <view class="listen-mini__cell">
+          <wd-button
+            type="primary"
+            variant="base"
+            block
+            size="small"
+            custom-class="listen-mini__btn listen-mini__btn--icon"
+            @click.stop="onToggle"
+          >
+            <wd-loading v-if="status === 'loading'" :color="playIconColor" size="18px" />
+            <view
+              v-else
+              class="listen-mini__play-icon"
+              :class="{ 'listen-mini__play-icon--play': status !== 'playing' }"
+            >
+              <AppIcon
+                :name="status === 'playing' ? 'pause' : 'play'"
+                :size="22"
+                :color="playIconColor"
+              />
+            </view>
+          </wd-button>
+        </view>
+        <view class="listen-mini__cell">
+          <wd-button
+            type="primary"
+            variant="soft"
+            block
+            size="small"
+            custom-class="listen-mini__btn listen-mini__btn--icon"
+            @click.stop="nextListenSentence"
+          >
+            <AppIcon name="fast-forward" :size="22" :color="softIconColor" />
+          </wd-button>
+        </view>
+        <view class="listen-mini__cell">
+          <wd-button
+            type="primary"
+            variant="soft"
+            block
+            size="small"
             custom-class="listen-mini__btn"
             @click.stop="expandListenPage"
           >
-            展开
+            听书页
           </wd-button>
         </view>
       </view>
@@ -124,11 +136,8 @@ const { themeVars } = useThemeAccent();
 
 const rateMenuOpen = ref(false);
 
-const playLabel = computed(() => {
-  if (status.value === "loading") return "…";
-  if (status.value === "playing") return "暂停";
-  return "播放";
-});
+const softIconColor = computed(() => String(themeVars.value.buttonPrimaryBg ?? "#dc541b"));
+const playIconColor = computed(() => String(themeVars.value.buttonMainColor ?? "#ffffff"));
 
 /** soft 底色对齐原迷你条，并带上组件按下态 SoftBgActive */
 const miniThemeVars = computed<ConfigProviderThemeVars>(() => {
@@ -254,7 +263,24 @@ function pickRate(r: number) {
   box-sizing: border-box;
 }
 
+.listen-mini :deep(.listen-mini__btn--icon) {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
 .listen-mini :deep(.listen-mini__btn::after) {
   border-radius: 12rpx !important;
+}
+
+.listen-mini__play-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 三角播放键视觉重心偏左，略右移居中 */
+.listen-mini__play-icon--play {
+  margin-left: 4rpx;
 }
 </style>

@@ -5,7 +5,7 @@ import {
   isEdgeTtsVoiceId,
 } from "@/constants/edgeTts";
 import { ttsPlayer } from "@/services/tts-player";
-import type { ListenSentence } from "@/utils/listen-text";
+import type { ListenSentence, ListenTextSpan } from "@/utils/listen-text";
 import { chapterToSentences } from "@/utils/listen-text";
 
 export type ListenStatus = "idle" | "loading" | "playing" | "paused";
@@ -21,6 +21,8 @@ export type StartListenOptions = {
   bookTitle: string;
   coverUrl?: string;
   chapterIndex: number;
+  /** 全书章节数，听书页「N 章」用；缺省不展示总数 */
+  chapterTotal?: number;
   /** 章内滚动进度 0–1，映射到起播句；缺省从章首 */
   scrollPercent?: number;
   getChapter: (index: number) => Promise<ListenChapterPayload>;
@@ -44,28 +46,75 @@ const bookId = ref("");
 const bookTitle = ref("");
 const coverUrl = ref("");
 const chapterIndex = ref(0);
+const chapterTotal = ref(0);
 const chapterTitle = ref("");
 const sentences = ref<ListenSentence[]>([]);
 const sentenceIndex = ref(0);
+/** 阅读页句级高亮 / 跟读（由 Edge WordBoundary 驱动） */
+const highlightSpan = ref<ListenTextSpan | null>(null);
 const rate = ref(1);
 const voice = ref(loadStoredVoice());
 const currentSentenceText = ref("");
+/** 章内播放位置/总时长（估算+实测），进度条用 */
+const positionMs = ref(0);
+const durationMs = ref(0);
 
 let getChapterFn: StartListenOptions["getChapter"] | null = null;
 let advancing = false;
 let sessionGen = 0;
+let progressTimer: ReturnType<typeof setInterval> | null = null;
+
+function syncListenProgress() {
+  try {
+    const p = ttsPlayer.getProgress();
+    positionMs.value = p.positionMs;
+    durationMs.value = p.durationMs;
+  } catch {
+    // 页面切换瞬间偶发访问失败，忽略
+  }
+}
+
+function startProgressTimer() {
+  if (progressTimer != null) return;
+  syncListenProgress();
+  progressTimer = setInterval(syncListenProgress, 250);
+}
+
+function stopProgressTimer() {
+  if (progressTimer == null) return;
+  clearInterval(progressTimer);
+  progressTimer = null;
+}
 
 function resetSession() {
   status.value = "idle";
   sentences.value = [];
   sentenceIndex.value = 0;
+  highlightSpan.value = null;
   currentSentenceText.value = "";
   chapterTitle.value = "";
+  chapterTotal.value = 0;
+  positionMs.value = 0;
+  durationMs.value = 0;
+  stopProgressTimer();
+}
+
+function applyHighlight(span: ListenTextSpan) {
+  highlightSpan.value = span;
+  currentSentenceText.value = span.text;
 }
 
 function applySentence(index: number) {
   sentenceIndex.value = index;
-  currentSentenceText.value = sentences.value[index]?.text ?? "";
+  const unit = sentences.value[index];
+  const first = unit?.parts[0];
+  if (first) applyHighlight(first);
+  else if (unit) {
+    applyHighlight({ text: unit.text, start: unit.start, end: unit.end });
+  } else {
+    highlightSpan.value = null;
+    currentSentenceText.value = "";
+  }
 }
 
 /** 章内滚动进度 → 句下标（对齐听书跟随滚屏的近似映射） */
@@ -120,7 +169,12 @@ async function loadAndPlayChapter(
     onSentenceChange: (i) => {
       if (gen !== sessionGen) return;
       applySentence(i);
+      syncListenProgress();
       if (status.value === "loading") status.value = "playing";
+    },
+    onHighlightChange: (span) => {
+      if (gen !== sessionGen) return;
+      applyHighlight(span);
     },
     onChapterEnd: () => {
       if (gen !== sessionGen) return;
@@ -134,17 +188,22 @@ async function loadAndPlayChapter(
     onPlay: () => {
       if (gen !== sessionGen) return;
       status.value = "playing";
+      startProgressTimer();
+      syncListenProgress();
     },
     onPause: () => {
       if (gen !== sessionGen) return;
       if (status.value === "playing" || status.value === "loading") {
         status.value = "paused";
       }
+      syncListenProgress();
     },
   });
   // 起播前只同步参数，避免 setVoice/setRate 抢跑 playCurrent 触发误报 onError
   ttsPlayer.setVoice(voice.value, { play: false });
   ttsPlayer.setRate(rate.value, { play: false });
+  syncListenProgress();
+  startProgressTimer();
 
   await ttsPlayer.playFrom(startIdx);
   if (gen !== sessionGen) return;
@@ -182,6 +241,7 @@ export async function startListen(opts: StartListenOptions): Promise<void> {
   bookTitle.value = opts.bookTitle;
   coverUrl.value = opts.coverUrl ?? "";
   chapterIndex.value = opts.chapterIndex;
+  chapterTotal.value = Math.max(0, opts.chapterTotal ?? 0);
   rate.value = 1;
   ttsPlayer.setVoice(voice.value, { play: false });
   ttsPlayer.setRate(1, { play: false });
@@ -241,6 +301,64 @@ export function nextListenSentence(): void {
   ttsPlayer.nextSentence();
 }
 
+/** 跳到章内指定句（进度条点选） */
+export function seekListenSentence(index: number): void {
+  if (status.value === "idle" || !sentences.value.length) return;
+  const i = Math.max(0, Math.min(index, sentences.value.length - 1));
+  status.value = "playing";
+  void ttsPlayer.playFrom(i);
+  syncListenProgress();
+}
+
+/** 章内快进/快退（毫秒，微信听书 ±15s） */
+export function seekListenBy(deltaMs: number): void {
+  if (status.value === "idle") return;
+  status.value = "playing";
+  ttsPlayer.seekBy(deltaMs);
+  syncListenProgress();
+  startProgressTimer();
+}
+
+/** 拖到章内绝对时间位置 */
+export function seekListenTo(ms: number): void {
+  if (status.value === "idle") return;
+  status.value = "playing";
+  void ttsPlayer.seekTo(ms);
+  syncListenProgress();
+  startProgressTimer();
+}
+
+/** mm:ss */
+export function formatListenClock(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+export async function prevListenChapter(): Promise<void> {
+  if (status.value === "idle" || !getChapterFn) return;
+  if (chapterIndex.value <= 0) {
+    uni.showToast({ title: "已是第一章", icon: "none" });
+    return;
+  }
+  await seekListenChapter(chapterIndex.value - 1, 0);
+}
+
+export async function nextListenChapter(): Promise<void> {
+  if (status.value === "idle" || !getChapterFn) return;
+  try {
+    const chapter = await getChapterFn(chapterIndex.value);
+    if (chapter.nextIndex == null) {
+      uni.showToast({ title: "已是最后一章", icon: "none" });
+      return;
+    }
+    await seekListenChapter(chapter.nextIndex, 0);
+  } catch {
+    uni.showToast({ title: "加载下一章失败", icon: "none" });
+  }
+}
+
 export function setListenRate(next: number): void {
   rate.value = next;
   ttsPlayer.setRate(next);
@@ -289,10 +407,30 @@ export function useChapterListen() {
   const sentenceCount = computed(() => sentences.value.length);
   const progressLabel = computed(() => {
     if (!sentences.value.length) return "";
-    return `${sentenceIndex.value + 1}/${sentences.value.length}`;
+    return `${sentenceIndex.value + 1} / ${sentences.value.length}`;
+  });
+  /** 章内句进度 0–1（迷你条等） */
+  const progressRatio = computed(() => {
+    const n = sentences.value.length;
+    if (n <= 0) return 0;
+    if (n === 1) return status.value === "idle" ? 0 : 1;
+    return Math.min(1, Math.max(0, sentenceIndex.value / (n - 1)));
+  });
+  /** 章内时长进度 0–1（听书页进度条） */
+  const timeProgressRatio = computed(() => {
+    if (durationMs.value <= 0) return 0;
+    return Math.min(1, Math.max(0, positionMs.value / durationMs.value));
+  });
+  const timeProgressLabel = computed(() => {
+    if (durationMs.value <= 0) return "00:00 / 00:00";
+    return `${formatListenClock(positionMs.value)} / ${formatListenClock(durationMs.value)}`;
   });
   const rateLabel = computed(() => `${rate.value}x`);
   const voiceLabel = computed(() => getEdgeTtsVoiceNameZh(voice.value));
+  const chapterCountLabel = computed(() => {
+    if (chapterTotal.value > 0) return `${chapterTotal.value} 章`;
+    return "目录";
+  });
 
   return {
     status,
@@ -301,9 +439,11 @@ export function useChapterListen() {
     bookTitle,
     coverUrl,
     chapterIndex,
+    chapterTotal,
     chapterTitle,
     sentences,
     sentenceIndex,
+    highlightSpan,
     sentenceCount,
     currentSentenceText,
     rate,
@@ -311,15 +451,26 @@ export function useChapterListen() {
     voice,
     voiceLabel,
     progressLabel,
+    progressRatio,
+    positionMs,
+    durationMs,
+    timeProgressRatio,
+    timeProgressLabel,
+    chapterCountLabel,
     rates: LISTEN_RATES,
     startListen,
     seekListenChapter,
+    seekListenSentence,
+    seekListenBy,
+    seekListenTo,
     pauseListen,
     resumeListen,
     togglePlayListen,
     stopListen,
     prevListenSentence,
     nextListenSentence,
+    prevListenChapter,
+    nextListenChapter,
     setListenRate,
     setListenVoice,
     cycleListenRate,

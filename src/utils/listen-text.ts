@@ -1,12 +1,119 @@
 /** 章节 HTML → 听书纯文本 / 分句（句界算法对齐 Web englishTts） */
 
+/** 纯文本坐标片段（句级高亮 / 跟读用） */
+export type ListenTextSpan = {
+  text: string;
+  start: number;
+  end: number;
+};
+
 export type ListenSentence = {
+  /** 送 TTS 的文本（整段；超长时为段内切出的一片） */
   text: string;
   index: number;
   /** 在章节纯文本中的起止（与 htmlToPlainText + stripMarkdownForTts 同一坐标系） */
   start: number;
   end: number;
+  /** 段内句界：合成按段，高亮按句（由 Edge WordBoundary 时间戳驱动） */
+  parts: ListenTextSpan[];
 };
+
+/** 与后端 /edge/speech/timed 的 boundary 对齐 */
+export type ListenBoundary = {
+  text: string;
+  offsetMs: number;
+  durationMs: number;
+};
+
+/** 把 Edge 词界顺序匹配到朗读文本上的字符区间 */
+export function mapBoundariesToCharOffsets(
+  text: string,
+  boundaries: Array<{ text: string }>,
+): Array<{ start: number; end: number } | null> {
+  const out: Array<{ start: number; end: number } | null> = [];
+  let cursor = 0;
+  for (const b of boundaries) {
+    const word = (b.text ?? "").trim();
+    if (!word) {
+      out.push(null);
+      continue;
+    }
+    const idx = text.indexOf(word, cursor);
+    if (idx < 0) {
+      // 匹配失败不推进 cursor，后续词仍有机会对齐（对齐 Readest）
+      out.push(null);
+      continue;
+    }
+    out.push({ start: idx, end: idx + word.length });
+    cursor = idx + word.length;
+  }
+  return out;
+}
+
+export function boundaryTimelineMs(boundaries: ListenBoundary[]): number {
+  if (!boundaries.length) return 0;
+  const last = boundaries[boundaries.length - 1];
+  if (!last) return 0;
+  return last.offsetMs + last.durationMs;
+}
+
+/** 中文 Edge TTS 粗估语速（字/秒 @1x，含标点停顿） */
+export const LISTEN_CHARS_PER_SEC = 4.2;
+
+/** 无实测时长时按字数估算；rate 已烘焙进音频时传合成倍速 */
+export function estimateSpeechDurationMs(text: string, rate = 1): number {
+  const r = Math.min(2, Math.max(0.5, rate));
+  const chars = Math.max(text.replace(/\s+/g, "").length, 1);
+  return Math.max(400, Math.round((chars / (LISTEN_CHARS_PER_SEC * r)) * 1000));
+}
+
+/** 章内时间轴 → 句下标 + 句内偏移 */
+export function locateSpeechOffset(
+  durationsMs: number[],
+  positionMs: number,
+): { index: number; offsetMs: number } {
+  if (!durationsMs.length) return { index: 0, offsetMs: 0 };
+  const target = Math.max(0, positionMs);
+  let acc = 0;
+  for (let i = 0; i < durationsMs.length; i += 1) {
+    const d = Math.max(0, durationsMs[i] ?? 0);
+    const last = i === durationsMs.length - 1;
+    if (last || acc + d > target) {
+      const offset = Math.min(Math.max(0, target - acc), Math.max(d - 1, 0));
+      return { index: i, offsetMs: offset };
+    }
+    acc += d;
+  }
+  return { index: durationsMs.length - 1, offsetMs: 0 };
+}
+
+/** 按音频时间（ms）在段内选当前句；无 boundary 时退回整段 */
+export function pickListenPartByTime(
+  unit: ListenSentence,
+  boundaries: ListenBoundary[],
+  timeMs: number,
+): ListenTextSpan {
+  const fallback: ListenTextSpan = { text: unit.text, start: unit.start, end: unit.end };
+  const parts = unit.parts.length > 0 ? unit.parts : [fallback];
+  const head = parts[0] ?? fallback;
+  if (!boundaries.length) return head;
+
+  let bi = 0;
+  for (let i = 0; i < boundaries.length; i += 1) {
+    if ((boundaries[i]?.offsetMs ?? 0) <= timeMs) bi = i;
+    else break;
+  }
+  const offsets = mapBoundariesToCharOffsets(unit.text, boundaries);
+  const cur = offsets[bi];
+  if (!cur) return head;
+  const abs = unit.start + cur.start;
+  for (const p of parts) {
+    if (abs >= p.start && abs < p.end) return p;
+  }
+  const tail = parts[parts.length - 1] ?? head;
+  if (abs >= tail.start) return tail;
+  return head;
+}
 
 export type ChapterHtmlSegment = {
   html: string;
@@ -122,20 +229,50 @@ export function htmlToPlainText(html: string): string {
     .trim();
 }
 
+/**
+ * TTS / 听书坐标用的纯文本清洗。
+ * 保留换行作段落界（听书按段合成）；行内空白压成单空格。
+ */
+/** 整段是否只剩装饰分隔符（*** / --- / _ 等），勿送 TTS */
+export function isDecorativeSeparatorText(text: string): boolean {
+  const t = text.replace(/\s+/g, "");
+  return t.length > 0 && /^[*＊\-—_=~～·•.]+$/u.test(t);
+}
+
+/**
+ * TTS / 听书坐标用的纯文本清洗。
+ * 保留换行作段落界（听书按段合成）；行内空白压成单空格。
+ */
 export function stripMarkdownForTts(raw: string): string {
   if (!raw?.trim()) return "";
-  return raw
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`[^`\n]+`/g, " ")
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/\*([^*]+)\*/g, "$1")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/^[-*+]\s+/gm, "")
-    .replace(/^\d+\.\s+/gm, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    raw
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/`[^`\n]+`/g, " ")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/\*([^*]+)\*/g, "$1")
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/^[-*+]\s+/gm, "")
+      .replace(/^\d+\.\s+/gm, "")
+      // 网文装饰分隔线（*** / --- / ——— 等），勿朗读
+      .replace(/[*＊]{3,}/g, " ")
+      .replace(/[-—_=~～]{3,}/g, " ")
+      .replace(/[·•.]{3,}/g, " ")
+      // * * * 间隔星号分隔
+      .replace(/(?:^|\s)(?:\*[ \t]*){2,}\*(?=\s|$)/gm, " ")
+      // 整行仅剩装饰符（含单个 _）
+      .replace(/^[ \t]*[*＊\-—_=~～·•.]{1,}[ \t]*$/gm, "")
+      // 保留 \n 作为段界；其它空白压平
+      .replace(/[^\S\n]+/g, " ")
+      .replace(/ *\n */g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
 }
+
+/** 单段超过此字数则段内回退句切，避免超长合成超时/失败 */
+const MAX_LISTEN_UNIT_CHARS = 600;
 
 const SENTENCE_TERMINATOR = /[.!?。！？；\uFF01\uFF1F]/u;
 const TRAILING_CLOSER_AFTER_SENTENCE_END =
@@ -316,17 +453,79 @@ export function buildSentenceOffsetSpans(plain: string): Array<{ start: number; 
   return spans.length > 0 ? spans : [{ start: 0, end: trimmed.length }];
 }
 
+/** 按换行切段（htmlToPlainText 已把 </p> 等变成 \n） */
+export function buildParagraphOffsetSpans(plain: string): Array<{ start: number; end: number }> {
+  const text = plain.replace(/\r\n/g, "\n").trim();
+  if (!text) return [];
+  const spans: Array<{ start: number; end: number }> = [];
+  for (const m of text.matchAll(/[^\n]+/g)) {
+    const raw = m[0];
+    const content = raw.trim();
+    if (!content) continue;
+    const lead = raw.length - raw.trimStart().length;
+    const start = m.index + lead;
+    spans.push({ start, end: start + content.length });
+  }
+  return spans.length > 0 ? spans : [{ start: 0, end: text.length }];
+}
+
+/** 超长段在段内按句切开，坐标映射回全文 */
+function expandSpansToMaxChars(
+  plain: string,
+  spans: Array<{ start: number; end: number }>,
+  maxChars: number,
+): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = [];
+  for (const span of spans) {
+    if (span.end - span.start <= maxChars) {
+      out.push(span);
+      continue;
+    }
+    const slice = plain.slice(span.start, span.end);
+    const inner = buildSentenceOffsetSpans(slice);
+    for (const s of inner) {
+      out.push({ start: span.start + s.start, end: span.start + s.end });
+    }
+  }
+  return out;
+}
+
+function partsForUnitSpan(plain: string, start: number, end: number): ListenTextSpan[] {
+  const slice = plain.slice(start, end);
+  const inner = buildSentenceOffsetSpans(slice);
+  const parts = inner
+    .map((s) => {
+      const text = slice.slice(s.start, s.end).replace(/\s+/g, " ").trim();
+      return { text, start: start + s.start, end: start + s.end };
+    })
+    .filter((p) => p.text.length > 0);
+  if (parts.length) return parts;
+  const text = slice.replace(/\s+/g, " ").trim();
+  return text ? [{ text, start, end }] : [];
+}
+
+/**
+ * 听书朗读单元：默认按段落（比逐句合成少请求、句间更顺）。
+ * `parts` 供句级高亮；播放进度由 Edge WordBoundary 驱动。
+ */
 export function chapterToSentences(html: string): ListenSentence[] {
   const plain = stripMarkdownForTts(htmlToPlainText(html));
   if (!plain) return [];
-  return buildSentenceOffsetSpans(plain)
-    .map(({ start, end }) => ({
-      text: stripMarkdownForTts(plain.slice(start, end)).trim(),
-      start,
-      end,
-    }))
-    .filter((s) => s.text.length > 0)
-    .map((s, index) => ({ text: s.text, index, start: s.start, end: s.end }));
+  const spans = expandSpansToMaxChars(
+    plain,
+    buildParagraphOffsetSpans(plain),
+    MAX_LISTEN_UNIT_CHARS,
+  );
+  return spans
+    .map(({ start, end }) => {
+      const text = plain.slice(start, end).replace(/\s+/g, " ").trim();
+      const parts = partsForUnitSpan(plain, start, end).filter(
+        (p) => !isDecorativeSeparatorText(p.text),
+      );
+      return { text, start, end, parts };
+    })
+    .filter((s) => s.text.length > 0 && !isDecorativeSeparatorText(s.text))
+    .map((s, index) => ({ ...s, index }));
 }
 
 /** 听书句级高亮：成对去掉 data-listen-hl 包裹（用 span，mp-html 信任标签） */

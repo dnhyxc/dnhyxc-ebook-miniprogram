@@ -112,17 +112,6 @@
       </wd-button>
     </view>
 
-    <!-- 听书跟读中且底栏收起：右下角圆形入口 -->
-    <view
-      v-if="showListenFloat"
-      class="reader-listen-float"
-      :class="{ 'reader-listen-float--playing': listenStatus === 'playing' }"
-      :style="listenFloatStyle"
-      @click.stop="onListenFloatTap"
-    >
-      <text class="reader-listen-float__text">听</text>
-    </view>
-
     <view
       v-if="hasContent"
       class="reader-chrome-bottom"
@@ -142,7 +131,8 @@
       >
         <text class="reader-listen-follow__text">回位</text>
       </view>
-      <ListenMiniBar :dark="isDarkPaper" @layout="onListenMiniLayout" />
+      <!-- 隐藏页仍挂迷你条会随 highlight setInterval setData → 微信 __subPageFrameEndTime__ -->
+      <ListenMiniBar v-if="readerPageVisible" :dark="isDarkPaper" @layout="onListenMiniLayout" />
 
       <view v-if="bottomPanel" class="reader-subpanel">
         <view v-if="bottomPanel === 'theme'" class="subpanel-section">
@@ -296,41 +286,20 @@
       <text class="reader-listen-follow__text">回位</text>
     </view>
 
-    <view
-      v-if="hasContent && tocOpen"
-      class="toc-sheet"
-      :class="{
-        'toc-sheet--dark': isDarkPaper,
-        'toc-sheet--closing': tocClosing,
-      }"
-      :style="tocSheetStyle"
-    >
-      <view
-        class="toc-handle"
-        @tap="closeToc"
-        @touchstart="onTocHandleTouchStart"
-        @touchend="onTocHandleTouchEnd"
-      >
-        <view class="toc-handle-bar" />
-      </view>
-      <scroll-view
-        scroll-y
-        class="toc-scroll"
-        :style="{ height: `${tocScrollHeight}px` }"
-        :show-scrollbar="false"
-      >
-        <view
-          v-for="item in toc"
-          :key="item.index"
-          class="toc-item"
-          :class="{ active: item.index === chapterIndex }"
-          :style="{ paddingLeft: `${24 + item.level * 24}rpx` }"
-          @click="goChapter(item.index)"
-        >
-          <text class="toc-item-text">{{ item.title || `第 ${item.index + 1} 章` }}</text>
-        </view>
-      </scroll-view>
-    </view>
+    <ChapterTocSheet
+      v-if="hasContent"
+      ref="tocSheetRef"
+      v-model:open="tocOpen"
+      :chapters="toc"
+      :active-index="chapterIndex"
+      :dark="isDarkPaper"
+      :background-color="readerStyle.backgroundColor"
+      :color="readerStyle.color"
+      :top="chromeInsets.top || 88"
+      :bottom="bottomChromeInset"
+      @select="goChapter"
+      @closed="onTocClosed"
+    />
   </view>
 </template>
 
@@ -388,7 +357,11 @@ const loadingText = ref("加载中…");
 const error = ref("");
 const chromeVisible = ref(false);
 const tocOpen = ref(false);
-const tocClosing = ref(false);
+/** 阅读页在前台时才做听书高亮 setData，避免隐藏页触发微信框架报错 */
+const readerPageVisible = ref(true);
+const tocSheetRef = ref<{ reset: () => void } | null>(null);
+const TOC_SWIPE_CLOSE_PX = 40;
+let tocHeaderStartY = 0;
 
 type BottomPanel = "theme" | "pageMode" | "typography";
 const bottomPanel = ref<BottomPanel | null>(null);
@@ -473,6 +446,7 @@ const {
   sentenceIndex: listenSentenceIndex,
   sentenceCount: listenSentenceCount,
   sentences: listenSentences,
+  highlightSpan: listenHighlightSpan,
   startListen,
   seekListenChapter,
   stopListen,
@@ -497,8 +471,6 @@ let listenProgrammaticUntil = 0;
 let listenBreakSuppressUntil = 0;
 let listenFollowBaselineTop = 0;
 const LISTEN_BREAK_FOLLOW_PX = 36;
-const LISTEN_FAB_SIZE_RPX = 104;
-const LISTEN_FAB_GAP_RPX = 16;
 const LISTEN_FAB_EDGE_RPX = 48;
 
 function markListenProgrammatic(ms = 400) {
@@ -534,27 +506,10 @@ function onListenScrollWhileFollowing(top: number) {
   }
 }
 
-/** 听书中底栏收起：右下角「听」入口（跟读打断后仍保留，回位叠在其上） */
-const showListenFloat = computed(
-  () => hasContent.value && listenActive.value && !chromeVisible.value && !tocOpen.value,
-);
-
 /** 跟读被手动滚动打断后：回到播放位置 */
 const showListenFollowFab = computed(
   () => hasContent.value && listenActive.value && !listenAutoFollow.value && !tocOpen.value,
 );
-
-const listenFloatStyle = computed(() => ({
-  ...accentBtnStyle.value,
-  bottom: `calc(${LISTEN_FAB_EDGE_RPX}rpx + env(safe-area-inset-bottom))`,
-}));
-
-function onListenFloatTap() {
-  suppressListenBreak(600);
-  chromeVisible.value = true;
-  bottomPanel.value = null;
-  void nextTick(() => setTimeout(measureChromeInsets, 80));
-}
 
 function onReaderContentTouchStart() {
   releaseChromeScrollGuard();
@@ -564,19 +519,29 @@ watch(listenActive, (active) => {
   if (active) {
     listenAutoFollow.value = true;
     syncListenFollowAnchor();
-    void nextTick(() => {
-      applyListenSentenceHighlight();
-    });
+    if (readerPageVisible.value) {
+      void nextTick(() => {
+        applyListenSentenceHighlight();
+      });
+    }
   } else {
+    clearListenAnchorTimer();
     clearListenSentenceHighlight();
   }
 });
 
-// 句切换必刷高亮（与是否跟读无关）；跟读滚屏另有 watch
+// 句级高亮随 WordBoundary 进度切换；阅读页隐藏时不 setData，避免微信 __subPageFrameEndTime__ 报错
 watch(
-  () => [listenActive.value, listenChapterIndex.value, listenSentenceIndex.value] as const,
-  ([active]) => {
-    if (!active) return;
+  () =>
+    [
+      listenActive.value,
+      listenChapterIndex.value,
+      listenHighlightSpan.value?.start,
+      listenHighlightSpan.value?.end,
+      readerPageVisible.value,
+    ] as const,
+  ([active, , , , visible]) => {
+    if (!active || !visible) return;
     void nextTick(() => applyListenSentenceHighlight());
   },
 );
@@ -586,20 +551,21 @@ const readingScrollPercent = ref(0);
 
 let lastChromeBottom = 0;
 const TOOLBAR_INSET_FALLBACK = 72;
+/** 听书迷你条 + 工具栏 + 安全区，测量未就绪时的兜底 */
+const LISTEN_CHROME_FALLBACK = 200;
 
 const bottomChromeInset = computed(() => {
   if (!chromeVisible.value && !tocOpen.value) return 0;
-  return chromeInsets.value.bottom || lastChromeBottom || TOOLBAR_INSET_FALLBACK;
+  const measured = chromeInsets.value.bottom || lastChromeBottom;
+  if (measured > 0) return measured;
+  return listenActive.value ? LISTEN_CHROME_FALLBACK : TOOLBAR_INSET_FALLBACK;
 });
 
-/** 仅底栏收起时使用：叠在「听」正上方（底栏开启时改挂 chrome 上沿） */
-const listenFollowStyle = computed(() => {
-  const aboveListen = LISTEN_FAB_EDGE_RPX + LISTEN_FAB_SIZE_RPX + LISTEN_FAB_GAP_RPX;
-  return {
-    ...accentBtnStyle.value,
-    bottom: `calc(${aboveListen}rpx + env(safe-area-inset-bottom))`,
-  };
-});
+/** 仅底栏收起时使用：贴右下安全区（底栏开启时改挂 chrome 上沿） */
+const listenFollowStyle = computed(() => ({
+  ...accentBtnStyle.value,
+  bottom: `calc(${LISTEN_FAB_EDGE_RPX}rpx + env(safe-area-inset-bottom))`,
+}));
 
 /** 按已读字符占比估算句在章内位置（块段定位失败时的兜底） */
 function listenSentenceScrollPercent(sent: number): number {
@@ -648,6 +614,7 @@ function listenHighlightMarkStyle(): string {
 }
 
 function setListenSegContent(chap: number, si: number, html: string) {
+  if (!readerPageVisible.value) return;
   const inst = getMpHtmlById(`mp-html-${chap}-${si}`);
   inst?.setContent?.(html);
 }
@@ -655,6 +622,8 @@ function setListenSegContent(chap: number, si: number, html: string) {
 /** 还原上一段干净 HTML（segments 里始终存无高亮原文） */
 function clearListenSentenceHighlight() {
   if (listenHlChap < 0 || listenHlSeg < 0) return;
+  // 隐藏时不 setContent，保留标记，onShow 再清/重绘
+  if (!readerPageVisible.value) return;
   const block = chapterBlocks.value.find((b) => b.index === listenHlChap);
   const clean = block?.segments[listenHlSeg]?.html;
   if (clean != null) setListenSegContent(listenHlChap, listenHlSeg, clean);
@@ -667,6 +636,7 @@ function clearListenSentenceHighlight() {
  * ponytail: 不改 seg.html 响应式数据，避免 :content watch 与手动 setContent 双灌。
  */
 function applyListenSentenceHighlight(retry = true) {
+  if (!readerPageVisible.value) return;
   if (!listenActive.value) {
     clearListenSentenceHighlight();
     return;
@@ -675,7 +645,7 @@ function applyListenSentenceHighlight(retry = true) {
   if (!isListenSegmentedChapter(chap)) return;
 
   const block = chapterBlocks.value.find((b) => b.index === chap);
-  const meta = listenSentences.value[listenSentenceIndex.value];
+  const meta = listenHighlightSpan.value;
   if (!block?.segments.length || !meta?.text) return;
 
   const si = segmentIndexForChar(block.segments, meta.start);
@@ -715,7 +685,7 @@ function listenFocusOffsetPx(): number {
 }
 
 /**
- * 滚到块段原生 view，并按段内字符占比微调。
+ * 跟读定位：句仍在可视舒适区内则不滚，否则滚到焦点带。
  * ponytail: id 在 view 上，不进 mp-html nodes，无句锚 setData 膨胀。
  */
 function scrollToListenSegment(
@@ -750,8 +720,29 @@ function scrollToListenSegment(
                 resolve(false);
                 return;
               }
-              const segTop = (block.top ?? 0) - (scroll.top ?? 0) + offsetTop;
+              const scrollTopY = scroll.top ?? 0;
+              const scrollH = scroll.height ?? 0;
               const segH = block.height ?? 0;
+              const highlightY = (block.top ?? 0) + frac * segH;
+              // 估一行高，保证整句落在舒适区内而非贴边
+              const lineH = Math.min(48, Math.max(20, Math.floor(scrollH * 0.04)));
+              const chromeCover = chromeVisible.value
+                ? chromeInsets.value.bottom || lastChromeBottom || 0
+                : 0;
+              const topPad = Math.max(40, Math.floor(scrollH * 0.1));
+              const bottomPad = Math.max(40, Math.floor(scrollH * 0.12)) + chromeCover;
+              const bandTop = scrollTopY + topPad;
+              const bandBottom = scrollTopY + scrollH - bottomPad;
+              const inBand = highlightY >= bandTop && highlightY + lineH <= bandBottom;
+
+              // 已在展示区：不跟跳，避免每句把正文顶出屏幕
+              if (inBand && !forceBump) {
+                syncListenFollowAnchor(offsetTop);
+                resolve(true);
+                return;
+              }
+
+              const segTop = (block.top ?? 0) - scrollTopY + offsetTop;
               const target = Math.max(0, Math.floor(segTop + frac * segH - focus));
               markListenProgrammatic(700);
               await applyScrollTop(target, forceBump);
@@ -767,6 +758,15 @@ function scrollToListenSegment(
 }
 
 /** 听书跟读：优先块段 view 定位，失败再回退章内字符占比 */
+let listenScrollGen = 0;
+let listenAnchorTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearListenAnchorTimer() {
+  if (listenAnchorTimer == null) return;
+  clearTimeout(listenAnchorTimer);
+  listenAnchorTimer = null;
+}
+
 async function scrollToListenSentence(force = false) {
   if (!listenActive.value) return;
   if (!force && !listenAutoFollow.value) return;
@@ -775,28 +775,35 @@ async function scrollToListenSentence(force = false) {
   const total = listenSentenceCount.value;
   if (total <= 0) return;
 
-  markListenProgrammatic(800);
+  const gen = ++listenScrollGen;
+  clearListenAnchorTimer();
   try {
     await ensureChapterLoaded(chap);
+    if (gen !== listenScrollGen) return;
     await nextTick();
-    // 切到分段 mp-html 后等一帧量高度
-    await new Promise((r) => setTimeout(r, force ? 80 : 32));
+    // 强制回位/切章后等一帧量高度；句级跟读段已挂好，不再空等
+    if (force) await new Promise((r) => setTimeout(r, 80));
+    if (gen !== listenScrollGen) return;
     if (!force && !listenAutoFollow.value) return;
 
     const block = chapterBlocks.value.find((b) => b.index === chap);
-    const meta = listenSentences.value[sent];
+    const meta = listenHighlightSpan.value ?? listenSentences.value[sent];
     if (block?.segments.length && meta && typeof meta.start === "number") {
       const ok = await scrollToListenSegment(chap, meta.start, meta.end, block.segments, force);
       if (ok) return;
     }
+    markListenProgrammatic(800);
     await scrollToChapter(chap, listenSentenceScrollPercent(sent), "listen");
   } finally {
-    markListenProgrammatic(280);
-    syncListenFollowAnchor();
-    lastScrollTopForChrome = currentScrollTop.value;
-    setTimeout(() => {
-      if (listenActive.value && listenAutoFollow.value) syncListenFollowAnchor();
-    }, 300);
+    if (gen === listenScrollGen) {
+      syncListenFollowAnchor();
+      lastScrollTopForChrome = currentScrollTop.value;
+      listenAnchorTimer = setTimeout(() => {
+        listenAnchorTimer = null;
+        if (gen !== listenScrollGen) return;
+        if (listenActive.value && listenAutoFollow.value) syncListenFollowAnchor();
+      }, 300);
+    }
   }
 }
 
@@ -821,6 +828,7 @@ async function onListenTap() {
       bookTitle: bookTitle.value,
       coverUrl: bookCoverUrl.value,
       chapterIndex: chapterIndex.value,
+      chapterTotal: chapterTotal.value,
       scrollPercent: readingScrollPercent.value,
       getChapter: async (index) => {
         const block = await fetchChapterBlock(index);
@@ -865,21 +873,6 @@ function liveWindowHeight(): number {
   }
   return windowHeight.value || 667;
 }
-
-const TOC_HANDLE_HEIGHT = 64;
-
-const tocScrollHeight = computed(() => {
-  const top = chromeInsets.value.top || 88;
-  const bottom = bottomChromeInset.value;
-  return Math.max(liveWindowHeight() - top - bottom - TOC_HANDLE_HEIGHT, 120);
-});
-
-const tocSheetStyle = computed(() => ({
-  top: `${chromeInsets.value.top}px`,
-  bottom: `${bottomChromeInset.value}px`,
-  backgroundColor: readerStyle.value.backgroundColor,
-  color: readerStyle.value.color,
-}));
 
 const chapterBlockStyle = computed(() => {
   const s = readerStyle.value;
@@ -1143,18 +1136,25 @@ function measureNavbarTitleMaxWidth() {
 
 function openBottomPanel(panel: BottomPanel | "toc") {
   if (panel === "toc") {
-    if (tocOpen.value && !tocClosing.value) {
-      closeToc();
-      return;
+    tocOpen.value = !tocOpen.value;
+    if (tocOpen.value) {
+      chromeVisible.value = true;
+      bottomPanel.value = null;
+      // 首帧先垫底栏高度，避免测量完成前抽屉沉到底栏下面
+      if (!chromeInsets.value.bottom) {
+        chromeInsets.value = {
+          top: chromeInsets.value.top,
+          bottom:
+            lastChromeBottom ||
+            (listenActive.value ? LISTEN_CHROME_FALLBACK : TOOLBAR_INSET_FALLBACK),
+        };
+      }
+      void nextTick(() => {
+        measureChromeInsets();
+        setTimeout(measureChromeInsets, 50);
+        setTimeout(measureChromeInsets, 320);
+      });
     }
-    if (tocClosing.value) return;
-    chromeVisible.value = true;
-    bottomPanel.value = null;
-    tocOpen.value = true;
-    void nextTick(() => {
-      measureChromeInsets();
-      setTimeout(measureChromeInsets, 320);
-    });
     return;
   }
   bottomPanel.value = bottomPanel.value === panel ? null : panel;
@@ -1180,56 +1180,41 @@ onReady(() => {
 });
 
 onShow(() => {
+  readerPageVisible.value = true;
   applyReaderPageChrome();
+  void nextTick(() => {
+    if (listenActive.value) applyListenSentenceHighlight();
+    else clearListenSentenceHighlight();
+  });
 });
 
 onHide(() => {
+  readerPageVisible.value = false;
   void flushProgressSave();
 });
 
 onUnload(() => {
-  resetTocCloseAnimation();
+  readerPageVisible.value = false;
+  clearListenAnchorTimer();
+  tocSheetRef.value?.reset();
   stopListenIfLeavingReader();
   void flushProgressSave();
 });
 
 function goBack() {
   if (tocOpen.value) {
-    closeToc();
+    tocOpen.value = false;
     return;
   }
   uni.navigateBack();
 }
 
-const TOC_SWIPE_CLOSE_PX = 40;
-const TOC_ANIM_MS = 280;
-
-let tocHeaderStartY = 0;
-let tocHandleStartY = 0;
-let tocCloseTimer: ReturnType<typeof setTimeout> | null = null;
-
-function closeToc() {
-  if (!tocOpen.value || tocClosing.value) return;
-  tocClosing.value = true;
-  if (tocCloseTimer) clearTimeout(tocCloseTimer);
-  tocCloseTimer = setTimeout(() => {
-    tocOpen.value = false;
-    tocClosing.value = false;
-    tocCloseTimer = null;
-    void nextTick(() => measureChromeInsets());
-  }, TOC_ANIM_MS);
-}
-
-function resetTocCloseAnimation() {
-  if (tocCloseTimer) {
-    clearTimeout(tocCloseTimer);
-    tocCloseTimer = null;
-  }
-  tocClosing.value = false;
+function onTocClosed() {
+  void nextTick(() => measureChromeInsets());
 }
 
 function onReaderTopTap() {
-  if (tocOpen.value && !tocClosing.value) closeToc();
+  if (tocOpen.value) tocOpen.value = false;
 }
 
 function onTocHeaderTouchStart(e: TouchEvent) {
@@ -1243,30 +1228,15 @@ function onTocHeaderTouchEnd(e: TouchEvent) {
     return;
   }
   const endY = e.changedTouches[0]?.clientY ?? 0;
-  if (endY - tocHeaderStartY > TOC_SWIPE_CLOSE_PX) closeToc();
+  if (endY - tocHeaderStartY > TOC_SWIPE_CLOSE_PX) tocOpen.value = false;
   tocHeaderStartY = 0;
-}
-
-function onTocHandleTouchStart(e: TouchEvent) {
-  if (!tocOpen.value) return;
-  tocHandleStartY = e.touches[0]?.clientY ?? 0;
-}
-
-function onTocHandleTouchEnd(e: TouchEvent) {
-  if (!tocOpen.value || !tocHandleStartY) {
-    tocHandleStartY = 0;
-    return;
-  }
-  const endY = e.changedTouches[0]?.clientY ?? 0;
-  if (endY - tocHandleStartY > TOC_SWIPE_CLOSE_PX) closeToc();
-  tocHandleStartY = 0;
 }
 
 function hideBottomChrome() {
   if (!chromeVisible.value) return;
   chromeVisible.value = false;
   bottomPanel.value = null;
-  closeToc();
+  tocOpen.value = false;
   void nextTick(() => setTimeout(measureChromeInsets, 120));
 }
 
@@ -1279,7 +1249,7 @@ function toggleChrome() {
   chromeVisible.value = !chromeVisible.value;
   if (!chromeVisible.value) {
     bottomPanel.value = null;
-    closeToc();
+    tocOpen.value = false;
   }
   void nextTick(() => {
     setTimeout(() => {
@@ -1367,15 +1337,24 @@ function measureChromeInsets() {
       const navBottom = getNavBarBottom();
       const placeholderBottom = topRect?.bottom ?? topRect?.height ?? 0;
       const top = navBottom || placeholderBottom || 88;
+      const wh = liveWindowHeight();
 
-      if (bottomRect && typeof bottomRect.top === "number" && bottomRect.top > 0) {
-        lastChromeBottom = Math.max(liveWindowHeight() - bottomRect.top, 0);
-      } else if (bottomRect?.height) {
-        lastChromeBottom = bottomRect.height;
+      // 底栏隐藏时是 translateY(100%)，top 会落到屏外，不能据此把缓存刷成 0
+      if (chromeVisible.value && bottomRect) {
+        const topY = typeof bottomRect.top === "number" ? bottomRect.top : -1;
+        const onScreen = topY >= 0 && topY < wh - 4;
+        if (onScreen) {
+          lastChromeBottom = Math.max(wh - topY, bottomRect.height || 0);
+        } else if (bottomRect.height > 0) {
+          lastChromeBottom = Math.max(lastChromeBottom, bottomRect.height);
+        }
       }
 
       const bottom =
-        chromeVisible.value || tocOpen.value ? lastChromeBottom || TOOLBAR_INSET_FALLBACK : 0;
+        chromeVisible.value || tocOpen.value
+          ? lastChromeBottom ||
+            (listenActive.value ? LISTEN_CHROME_FALLBACK : TOOLBAR_INSET_FALLBACK)
+          : 0;
       chromeInsets.value = { top, bottom };
     });
 }
@@ -1499,18 +1478,20 @@ watch(
       listenActive.value,
       listenAutoFollow.value,
       listenChapterIndex.value,
-      listenSentenceIndex.value,
+      listenHighlightSpan.value?.start,
+      listenHighlightSpan.value?.end,
       listenSentenceCount.value,
+      readerPageVisible.value,
     ] as const,
-  ([active, follow, , , total]) => {
-    if (!active || !follow || total <= 0) return;
+  ([active, follow, , , , total, visible]) => {
+    if (!active || !follow || !visible || total <= 0) return;
     void scrollToListenSentence(false);
   },
 );
 
 async function openAtChapter(index: number, scrollPercent = 0, forceRefresh = false) {
   chapterBlocks.value = [];
-  closeToc();
+  tocOpen.value = false;
   setActiveChapterMeta(index);
 
   // 先挂当前章并定位，邻章错峰加载，避免连续几次 MB 级 setData
@@ -1892,41 +1873,6 @@ function persistProgress(scrollPercent: number) {
   pointer-events: auto;
 }
 
-.reader-listen-float {
-  position: fixed;
-  right: 32rpx;
-  z-index: 90;
-  width: 104rpx;
-  height: 104rpx;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 8rpx 28rpx rgba(0, 0, 0, 0.22);
-  box-sizing: border-box;
-}
-
-.reader-listen-float--playing {
-  animation: listen-float-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes listen-float-pulse {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.06);
-  }
-}
-
-.reader-listen-float__text {
-  font-size: 34rpx;
-  font-weight: 700;
-  line-height: 1;
-  color: inherit;
-}
-
 .reader-listen-follow {
   position: fixed;
   right: 32rpx;
@@ -2238,87 +2184,5 @@ function persistProgress(scrollPercent: number) {
 .state-text {
   font-size: 28rpx;
   color: var(--wot-text-auxiliary);
-}
-
-.toc-sheet {
-  position: fixed;
-  left: 0;
-  right: 0;
-  z-index: 99;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-  border-radius: 24rpx 24rpx 0 0;
-  overflow: hidden;
-  box-shadow: 0 -8rpx 32rpx rgba(0, 0, 0, 0.08);
-  animation: toc-slide-up 0.28s cubic-bezier(0.32, 0.72, 0, 1);
-}
-
-.toc-sheet--closing {
-  animation: toc-slide-down 0.28s cubic-bezier(0.32, 0.72, 0, 1) forwards;
-  pointer-events: none;
-}
-
-@keyframes toc-slide-up {
-  from {
-    transform: translateY(100%);
-  }
-  to {
-    transform: translateY(0);
-  }
-}
-
-@keyframes toc-slide-down {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(100%);
-  }
-}
-
-.toc-handle {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  min-height: 120rpx;
-  box-sizing: border-box;
-}
-
-.toc-handle-bar {
-  width: 72rpx;
-  height: 8rpx;
-  border-radius: 999rpx;
-  background: rgba(0, 0, 0, 0.12);
-}
-
-.toc-sheet--dark .toc-handle-bar {
-  background: rgba(255, 255, 255, 0.2);
-}
-
-.toc-scroll {
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.toc-item {
-  display: block;
-  padding: 20rpx 32rpx;
-  box-sizing: border-box;
-}
-
-.toc-item-text {
-  display: block;
-  font-size: 32rpx;
-  line-height: 1.5;
-  color: inherit;
-  word-break: break-all;
-}
-
-.toc-item.active .toc-item-text {
-  color: var(--wot-primary-6);
-  font-weight: 600;
 }
 </style>

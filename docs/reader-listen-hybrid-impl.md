@@ -2,6 +2,7 @@
 
 > **状态**：已采纳  
 > **关联文件**：`src/services/tts.ts`、`src/services/tts-player.ts`、`src/hooks/useChapterListen.ts`、`src/components/ListenMiniBar.vue`、`src/pages/listen/index.vue`、`src/pages/reader/index.vue`、`src/pages.json`、`src/manifest.json`、`src/hooks/useTheme.ts`、`src/utils/listen-text.ts`  
+> **后续迭代文档**：迷你条 UI [reader-listen-minibar-ui-impl.md](./reader-listen-minibar-ui-impl.md)；跟读可视区 [reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md)；隐藏页 setData [reader-listen-hidden-page-setdata-impl.md](./reader-listen-hidden-page-setdata-impl.md)  
 > **来源会话**：[听书混合交互](faa5daf9-2879-4986-83be-4d4d503a5cec)
 
 ---

@@ -1,6 +1,16 @@
 import { DEFAULT_EDGE_TTS_VOICE } from "@/constants/edgeTts";
-import { synthesizeEdgeSpeech, type EdgeSpeechRequest } from "@/services/tts";
-import type { ListenSentence } from "@/utils/listen-text";
+import {
+  synthesizeEdgeSpeechTimed,
+  type EdgeSpeechTimedRequest,
+  type EdgeTtsBoundary,
+} from "@/services/tts";
+import type { ListenSentence, ListenTextSpan } from "@/utils/listen-text";
+import {
+  boundaryTimelineMs,
+  estimateSpeechDurationMs,
+  locateSpeechOffset,
+  pickListenPartByTime,
+} from "@/utils/listen-text";
 
 function userDataPath(): string {
   // mp-weixin: wx.env.USER_DATA_PATH；uni 部分版本暴露 uni.env
@@ -79,6 +89,8 @@ export type TtsPlayerConfigure = {
   coverUrl?: string;
   sentences: ListenSentence[];
   onSentenceChange?: (index: number) => void;
+  /** 段内句级高亮（由 WordBoundary 时间戳驱动） */
+  onHighlightChange?: (span: ListenTextSpan) => void;
   onChapterEnd?: () => void;
   onError?: (message: string) => void;
   /** 真正开始出声时回调（用于把 UI 从 loading/paused 切到 playing） */
@@ -87,16 +99,26 @@ export type TtsPlayerConfigure = {
   onPause?: () => void;
 };
 
+type SpeechPayload = {
+  audio: ArrayBuffer;
+  boundaries: EdgeTtsBoundary[];
+};
+
 type SpeechJob = {
   key: string;
-  req: EdgeSpeechRequest;
-  promise: Promise<ArrayBuffer | null>;
+  req: EdgeSpeechTimedRequest;
+  promise: Promise<SpeechPayload | null>;
 };
 
 type ApplyOpts = {
   /** 为 false 时只改参数，不开播（起播前设音色/倍速用） */
   play?: boolean;
 };
+
+/** 预取段数：当前段播放期间把后面几段合成+落盘，压低段间静音 */
+const PREFETCH_AHEAD = 2;
+/** BGM onTimeUpdate 不可靠；用 tick + boundary 表驱动高亮 */
+const HIGHLIGHT_TICK_MS = 200;
 
 /**
  * ponytail: 锁屏/后台续播必须用 BackgroundAudioManager。
@@ -114,20 +136,96 @@ class TtsPlayer {
   private lastTempPath = "";
   private expectingPlayback = false;
   private playWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  private highlightTimer: ReturnType<typeof setInterval> | null = null;
+  private highlightStartedAt = 0;
+  private highlightPausedMs = 0;
+  private highlightPauseAt = 0;
+  private activeBoundaries: EdgeTtsBoundary[] = [];
+  private lastHighlightKey = "";
+  /** 进行中的合成 */
   private jobs = new Map<string, SpeechJob>();
+  /** 已完成的音频+boundary（预取结果必须留下） */
+  private speechCache = new Map<string, SpeechPayload>();
+  /** 已写入本地的 mp3，切段时直接 bgm.src，少一次写盘等待 */
+  private fileCache = new Map<string, string>();
   private bookTitle = "";
   private chapterTitle = "";
   private coverUrl = "";
   private onSentenceChange?: (index: number) => void;
+  private onHighlightChange?: (span: ListenTextSpan) => void;
   private onChapterEnd?: () => void;
   private onError?: (message: string) => void;
   private onPlay?: () => void;
   private onPause?: () => void;
+  /** 各句实测/估算时长（ms）；倍速变更后重估 */
+  private sentenceDurMs: number[] = [];
+  /** playCurrent 时句内起播偏移（seek 用） */
+  private pendingStartMs = 0;
+  /** 当前句高亮时钟起点（句内 offset） */
+  private clipOriginMs = 0;
+  /** 串行化 ±/拖拽 seek，避免连点打断合成后误报失败 */
+  private seekQueue: Promise<void> = Promise.resolve();
 
   private clearPlayWatchdog(): void {
     if (this.playWatchdogTimer == null) return;
     clearTimeout(this.playWatchdogTimer);
     this.playWatchdogTimer = null;
+  }
+
+  private stopHighlightTick(): void {
+    if (this.highlightTimer == null) return;
+    clearInterval(this.highlightTimer);
+    this.highlightTimer = null;
+  }
+
+  private emitHighlight(timeMs: number): void {
+    const unit = this.sentences[this.sentenceIndex];
+    if (!unit || !this.onHighlightChange) return;
+    const span = pickListenPartByTime(unit, this.activeBoundaries, timeMs);
+    const key = `${this.sentenceIndex}:${span.start}:${span.end}`;
+    if (key === this.lastHighlightKey) return;
+    this.lastHighlightKey = key;
+    this.onHighlightChange(span);
+  }
+
+  private resolvePlaybackTimeMs(): number {
+    const bgm = this.bgm;
+    const cur = Number(bgm?.currentTime ?? 0);
+    if (Number.isFinite(cur) && cur > 0) return Math.round(cur * 1000);
+
+    // currentTime 不可用：用墙钟映射到 boundary 时间轴（语速已烘焙进音频）
+    const total = boundaryTimelineMs(this.activeBoundaries);
+    if (total <= 0) return 0;
+    let paused = this.highlightPausedMs;
+    if (this.highlightPauseAt > 0) paused += Date.now() - this.highlightPauseAt;
+    const elapsed = Math.max(0, Date.now() - this.highlightStartedAt - paused);
+    return Math.min(total * 0.99, elapsed);
+  }
+
+  private tickHighlight(): void {
+    try {
+      this.emitHighlight(this.resolvePlaybackTimeMs());
+    } catch {
+      // 隐藏页/销毁瞬间回调可能踩微信框架空指针，吞掉即可
+    }
+  }
+
+  private startHighlightTick(resetClock: boolean): void {
+    this.stopHighlightTick();
+    if (resetClock) {
+      this.highlightStartedAt = Date.now() - this.clipOriginMs;
+      this.highlightPausedMs = 0;
+    } else if (this.highlightPauseAt > 0) {
+      this.highlightPausedMs += Date.now() - this.highlightPauseAt;
+    }
+    this.highlightPauseAt = 0;
+    this.tickHighlight();
+    this.highlightTimer = setInterval(() => this.tickHighlight(), HIGHLIGHT_TICK_MS);
+  }
+
+  private pauseHighlightTick(): void {
+    if (this.highlightPauseAt <= 0) this.highlightPauseAt = Date.now();
+    this.stopHighlightTick();
   }
 
   private markPlaying(gen: number): void {
@@ -136,6 +234,7 @@ class TtsPlayer {
     this.playedGen = gen;
     this.expectingPlayback = false;
     this.clearPlayWatchdog();
+    this.startHighlightTick(true);
     this.onPlay?.();
   }
 
@@ -154,29 +253,35 @@ class TtsPlayer {
     const bgm = uni.getBackgroundAudioManager();
     if (!this.bgmBound) {
       bgm.onEnded(() => {
+        this.stopHighlightTick();
         void this.playNext();
       });
       bgm.onPlay(() => {
-        if (!this.expectingPlayback) return;
-        this.markPlaying(this.playGen);
+        if (this.expectingPlayback) this.markPlaying(this.playGen);
+        else if (this.sentences[this.sentenceIndex] && this.highlightTimer == null) {
+          this.startHighlightTick(false);
+        }
       });
       bgm.onPause(() => {
         this.expectingPlayback = false;
         this.clearPlayWatchdog();
+        this.pauseHighlightTick();
         this.onPause?.();
       });
       bgm.onStop(() => {
         this.expectingPlayback = false;
         this.clearPlayWatchdog();
+        this.stopHighlightTick();
       });
-      // 锁屏/控制中心切句
       bgm.onPrev(() => {
         this.prevSentence();
       });
       bgm.onNext(() => {
         this.nextSentence();
       });
-      // BGM onError 亦常误报，不据此 toast
+      bgm.onTimeUpdate(() => {
+        this.tickHighlight();
+      });
       bgm.onError(() => undefined);
       this.bgmBound = true;
     }
@@ -204,7 +309,6 @@ class TtsPlayer {
     const silent = ensureSilentWavPath();
     if (!silent) return;
     try {
-      // 赋值 src 即开播；静音片仅用于解锁
       bgm.src = silent;
     } catch {
       // ignore
@@ -218,12 +322,105 @@ class TtsPlayer {
     this.coverUrl = opts.coverUrl ?? "";
     this.sentences = opts.sentences;
     this.onSentenceChange = opts.onSentenceChange;
+    this.onHighlightChange = opts.onHighlightChange;
     this.onChapterEnd = opts.onChapterEnd;
     this.onError = opts.onError;
     this.onPlay = opts.onPlay;
     this.onPause = opts.onPause;
     this.sentenceIndex = 0;
+    this.activeBoundaries = [];
+    this.lastHighlightKey = "";
+    this.pendingStartMs = 0;
+    this.reestimateDurations();
     this.abortAllSpeech();
+  }
+
+  private reestimateDurations(): void {
+    this.sentenceDurMs = this.sentences.map((s) => estimateSpeechDurationMs(s.text, this.rate));
+  }
+
+  private durationAt(index: number): number {
+    const known = this.sentenceDurMs[index];
+    if (known != null && known > 0) return known;
+    const s = this.sentences[index];
+    return s ? estimateSpeechDurationMs(s.text, this.rate) : 0;
+  }
+
+  private rememberDuration(index: number, boundaries: EdgeTtsBoundary[]): void {
+    const fromBoundary = boundaryTimelineMs(boundaries);
+    let fromBgm = 0;
+    try {
+      const d = Number(this.bgm?.duration ?? 0);
+      if (Number.isFinite(d) && d > 0) fromBgm = Math.round(d * 1000);
+    } catch {
+      // ignore
+    }
+    const next = fromBoundary || fromBgm || this.durationAt(index);
+    if (next > 0) this.sentenceDurMs[index] = next;
+  }
+
+  /** 章内播放进度（估算总时长 + 当前句内时间） */
+  getProgress(): { positionMs: number; durationMs: number } {
+    let durationMs = 0;
+    for (let i = 0; i < this.sentences.length; i += 1) durationMs += this.durationAt(i);
+    let positionMs = 0;
+    for (let i = 0; i < this.sentenceIndex; i += 1) positionMs += this.durationAt(i);
+    positionMs += this.resolvePlaybackTimeMs();
+    if (durationMs > 0) positionMs = Math.min(positionMs, durationMs);
+    return { positionMs, durationMs };
+  }
+
+  /** ±毫秒快进/快退（跨句）；连点排队，用最新进度累加 */
+  seekBy(deltaMs: number): void {
+    void this.enqueueSeek(async () => {
+      const { positionMs } = this.getProgress();
+      await this.seekToUnlocked(positionMs + deltaMs);
+    });
+  }
+
+  /** 跳到章内绝对时间 */
+  seekTo(positionMs: number): Promise<void> {
+    return this.enqueueSeek(() => this.seekToUnlocked(positionMs));
+  }
+
+  private enqueueSeek(task: () => Promise<void>): Promise<void> {
+    const run = this.seekQueue.then(task, task);
+    this.seekQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async seekToUnlocked(positionMs: number): Promise<void> {
+    if (!this.sentences.length) return;
+    const durs = this.sentences.map((_, i) => this.durationAt(i));
+    const total = durs.reduce((a, b) => a + b, 0);
+    const target = Math.max(0, Math.min(positionMs, Math.max(total - 1, 0)));
+    const { index, offsetMs } = locateSpeechOffset(durs, target);
+    const sameClip = index === this.sentenceIndex;
+
+    // 同句内优先 bgm.seek，避免重合成；偏移已近句末则落到下一句
+    if (sameClip && this.bgm && this.lastTempPath) {
+      const clipDur = Math.max(this.durationAt(index), 1);
+      if (offsetMs < clipDur - 80) {
+        try {
+          this.bgm.seek(offsetMs / 1000);
+          this.clipOriginMs = offsetMs;
+          this.highlightStartedAt = Date.now() - offsetMs;
+          this.highlightPausedMs = 0;
+          this.highlightPauseAt = 0;
+          this.emitHighlight(offsetMs);
+          return;
+        } catch {
+          // fall through：部分机型 seek 失败则重开播
+        }
+      }
+    }
+
+    this.sentenceIndex = index;
+    this.pendingStartMs = offsetMs;
+    await this.playCurrent();
   }
 
   getSentenceIndex(): number {
@@ -243,6 +440,7 @@ class TtsPlayer {
     if (next === this.rate) return;
     this.rate = next;
     this.abortAllSpeech();
+    this.reestimateDurations();
     if (opts.play !== false && this.sentences.length) {
       void this.playCurrent();
     }
@@ -265,10 +463,12 @@ class TtsPlayer {
       return;
     }
     this.sentenceIndex = Math.max(0, Math.min(index, this.sentences.length - 1));
+    this.pendingStartMs = 0;
     await this.playCurrent();
   }
 
   pause(): void {
+    this.pauseHighlightTick();
     try {
       this.ensureBgm().pause();
     } catch {
@@ -280,6 +480,7 @@ class TtsPlayer {
     try {
       this.expectingPlayback = true;
       this.ensureBgm().play();
+      this.startHighlightTick(false);
     } catch {
       // ignore
     }
@@ -290,6 +491,11 @@ class TtsPlayer {
     this.abortAllSpeech();
     this.expectingPlayback = false;
     this.clearPlayWatchdog();
+    this.stopHighlightTick();
+    this.activeBoundaries = [];
+    this.lastHighlightKey = "";
+    this.pendingStartMs = 0;
+    this.sentenceDurMs = [];
     if (this.bgm) {
       try {
         this.bgm.stop();
@@ -305,7 +511,6 @@ class TtsPlayer {
   destroy(): void {
     this.stop();
     this.bgm = null;
-    // BackgroundAudioManager 是单例，不能 destroy；监听只绑一次
   }
 
   prevSentence(): void {
@@ -336,11 +541,25 @@ class TtsPlayer {
     return `${this.voice}\0${this.rate}\0${text}`;
   }
 
+  private keepKeysFrom(index: number): Set<string> {
+    const keep = new Set<string>();
+    for (let i = 0; i <= PREFETCH_AHEAD; i += 1) {
+      const s = this.sentences[index + i];
+      if (s?.text) keep.add(this.cacheKey(s.text));
+    }
+    return keep;
+  }
+
   private abortAllSpeech(): void {
     for (const job of this.jobs.values()) {
       job.req.abort();
     }
     this.jobs.clear();
+    this.speechCache.clear();
+    for (const path of this.fileCache.values()) {
+      this.removeTemp(path);
+    }
+    this.fileCache.clear();
   }
 
   private abortSpeechExcept(keepKeys: Set<string>): void {
@@ -349,16 +568,36 @@ class TtsPlayer {
       job.req.abort();
       this.jobs.delete(key);
     }
+    for (const key of [...this.speechCache.keys()]) {
+      if (keepKeys.has(key)) continue;
+      this.speechCache.delete(key);
+    }
+    for (const [key, path] of [...this.fileCache.entries()]) {
+      if (keepKeys.has(key)) continue;
+      this.fileCache.delete(key);
+      if (path !== this.lastTempPath) this.removeTemp(path);
+    }
   }
 
-  private startSpeech(text: string): Promise<ArrayBuffer | null> {
+  private startSpeech(text: string): Promise<SpeechPayload | null> {
     const key = this.cacheKey(text);
+    const cached = this.speechCache.get(key);
+    if (cached) return Promise.resolve(cached);
+
     const existing = this.jobs.get(key);
     if (existing) return existing.promise;
 
-    const req = synthesizeEdgeSpeech(text, { voice: this.voice, speed: this.rate });
+    const req = synthesizeEdgeSpeechTimed(text, { voice: this.voice, speed: this.rate });
     const promise = req.promise
-      .then((buf) => buf)
+      .then((result) => {
+        if (!result.audio?.byteLength) return null;
+        const payload: SpeechPayload = {
+          audio: result.audio,
+          boundaries: result.boundaries ?? [],
+        };
+        this.speechCache.set(key, payload);
+        return payload;
+      })
       .catch(() => null)
       .finally(() => {
         const cur = this.jobs.get(key);
@@ -368,20 +607,36 @@ class TtsPlayer {
     return promise;
   }
 
-  private prefetchNext(fromIndex: number): void {
-    const next = this.sentences[fromIndex + 1];
-    if (!next?.text) return;
-    void this.startSpeech(next.text);
+  private prefetchAhead(fromIndex: number): void {
+    const gen = this.playGen;
+    for (let i = 1; i <= PREFETCH_AHEAD; i += 1) {
+      const s = this.sentences[fromIndex + i];
+      if (!s?.text) continue;
+      void this.prepareFile(s.text, gen);
+    }
   }
 
-  private async takeBuffer(text: string): Promise<ArrayBuffer> {
-    const buf = await this.startSpeech(text);
-    if (buf) return buf;
+  private async takeSpeech(text: string, gen: number): Promise<SpeechPayload | null> {
+    const hit = await this.startSpeech(text);
+    if (gen !== this.playGen) return null;
+    if (hit?.audio.byteLength) return hit;
+
     const key = this.cacheKey(text);
-    this.jobs.get(key)?.req.abort();
-    this.jobs.delete(key);
+    // 仅清失败缓存，勿 abort 同 key 上可能已被新 playGen 复用的任务
+    this.speechCache.delete(key);
+    if (!this.jobs.has(key)) {
+      // 旧 job 已结束；再开一轮
+    } else {
+      // job 仍在：多半是被取消，等 playGen 判定后退出，避免误杀新请求
+      if (gen !== this.playGen) return null;
+      this.jobs.get(key)?.req.abort();
+      this.jobs.delete(key);
+    }
+
+    if (gen !== this.playGen) return null;
     const again = await this.startSpeech(text);
-    if (!again) throw new Error("语音合成失败");
+    if (gen !== this.playGen) return null;
+    if (!again?.audio.byteLength) throw new Error("语音合成失败");
     return again;
   }
 
@@ -402,47 +657,83 @@ class TtsPlayer {
     return filePath;
   }
 
+  /** 合成并写成本地文件；同时缓存 boundary；命中 fileCache 则直接返回 */
+  private async prepareFile(
+    text: string,
+    gen: number,
+  ): Promise<{ path: string; boundaries: EdgeTtsBoundary[] } | null> {
+    const key = this.cacheKey(text);
+    const speech = await this.takeSpeech(text, gen);
+    if (!speech) return null;
+    const hit = this.fileCache.get(key);
+    if (hit) return { path: hit, boundaries: speech.boundaries };
+    const filePath = this.writeTempMp3(speech.audio);
+    this.fileCache.set(key, filePath);
+    return { path: filePath, boundaries: speech.boundaries };
+  }
+
   private async playCurrent(): Promise<void> {
     const gen = ++this.playGen;
+    this.stopHighlightTick();
     const sentence = this.sentences[this.sentenceIndex];
     if (!sentence) {
       this.onChapterEnd?.();
       return;
     }
 
-    this.onSentenceChange?.(this.sentenceIndex);
+    const startMs = Math.max(0, this.pendingStartMs);
+    this.pendingStartMs = 0;
+    this.clipOriginMs = startMs;
 
-    const curKey = this.cacheKey(sentence.text);
-    this.abortSpeechExcept(new Set([curKey]));
+    this.onSentenceChange?.(this.sentenceIndex);
+    // 切段瞬间先高亮首句（boundary 到位后由 tick 推进）
+    this.lastHighlightKey = "";
+    this.activeBoundaries = [];
+    this.emitHighlight(startMs);
+
+    const keep = this.keepKeysFrom(this.sentenceIndex);
+    this.abortSpeechExcept(keep);
+    this.prefetchAhead(this.sentenceIndex);
 
     const bgm = this.ensureBgm();
     this.expectingPlayback = false;
     this.clearPlayWatchdog();
 
     try {
-      const buf = await this.takeBuffer(sentence.text);
+      const prepared = await this.prepareFile(sentence.text, gen);
       if (gen !== this.playGen) return;
-      if (!buf.byteLength) throw new Error("语音合成失败");
+      if (!prepared) return;
 
-      const prev = this.lastTempPath;
-      const filePath = this.writeTempMp3(buf);
-      this.lastTempPath = filePath;
-
+      this.activeBoundaries = prepared.boundaries;
+      this.rememberDuration(this.sentenceIndex, prepared.boundaries);
+      this.lastTempPath = prepared.path;
       this.applyBgmMeta(sentence.text || this.chapterTitle || "听书");
       this.expectingPlayback = true;
       this.armPlayWatchdog(gen);
-      // 赋值 src 后自动播放，支持锁屏/后台
-      bgm.src = filePath;
-
-      this.removeTemp(prev);
+      // 句内 seek：先 startTime 再赋 src；播放后再 seek 兜底
+      try {
+        bgm.startTime = startMs / 1000;
+      } catch {
+        // ignore
+      }
+      bgm.src = prepared.path;
+      if (startMs > 0) {
+        try {
+          bgm.seek(startMs / 1000);
+        } catch {
+          // ignore
+        }
+      }
 
       if (gen === this.playGen) {
-        this.prefetchNext(this.sentenceIndex);
+        this.prefetchAhead(this.sentenceIndex);
       }
-    } catch {
-      if (gen === this.playGen) {
-        this.onError?.("语音合成失败");
-      }
+    } catch (err) {
+      if (gen !== this.playGen) return;
+      const msg = err instanceof Error ? err.message : "";
+      // 被更新的 seek/切段取消时不弹失败
+      if (/取消/.test(msg)) return;
+      this.onError?.("语音合成失败");
     }
   }
 }
