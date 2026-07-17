@@ -8,13 +8,13 @@ export type ListenTextSpan = {
 };
 
 export type ListenSentence = {
-  /** 送 TTS 的文本（一句；超长句再切开） */
+  /** 送 TTS 的文本（多句拼接；超长再切开） */
   text: string;
   index: number;
   /** 在章节纯文本中的起止（与 htmlToPlainText + stripMarkdownForTts 同一坐标系） */
   start: number;
   end: number;
-  /** 高亮片段；一句一单元时通常仅含自身 */
+  /** 单元内句级片段，供高亮与上下句 */
   parts: ListenTextSpan[];
 };
 
@@ -93,6 +93,68 @@ export function listenUnitParts(unit: ListenSentence): ListenTextSpan[] {
   return [{ text: unit.text, start: unit.start, end: unit.end }];
 }
 
+/**
+ * 决定本次合成文本：紧急开播用短句；长片段已就绪 / 段内 seek / 单句单元则整段。
+ * ponytail: 双轨合成策略的纯函数入口，播放器只消费返回值。
+ */
+export function resolveListenSynthTarget(
+  unit: ListenSentence,
+  opts: { partIndex: number; useUnit: boolean },
+): { text: string; kind: "part" | "unit"; partIndex: number } {
+  const parts = listenUnitParts(unit);
+  const pi = Math.min(Math.max(0, opts.partIndex), Math.max(0, parts.length - 1));
+  if (opts.useUnit || parts.length <= 1) {
+    return { text: unit.text, kind: "unit", partIndex: pi };
+  }
+  const part = parts[pi];
+  return { text: part?.text || unit.text, kind: "part", partIndex: pi };
+}
+
+/** 从 fromPartIndex 起的剩余文本（预取接龙用，去掉已播短句） */
+export function listenUnitTailText(unit: ListenSentence, fromPartIndex: number): string {
+  const parts = listenUnitParts(unit);
+  if (!parts.length || fromPartIndex >= parts.length) return "";
+  if (fromPartIndex <= 0) return unit.text;
+  return parts
+    .slice(fromPartIndex)
+    .map((p) => p.text)
+    .join(" ");
+}
+
+/** 剩余片段作为临时朗读单元（boundary / 高亮坐标系） */
+export function listenUnitTail(unit: ListenSentence, fromPartIndex: number): ListenSentence | null {
+  const parts = listenUnitParts(unit);
+  if (!parts.length || fromPartIndex >= parts.length) return null;
+  if (fromPartIndex <= 0) return unit;
+  const rest = parts.slice(fromPartIndex);
+  const head = rest[0];
+  const tail = rest[rest.length - 1];
+  if (!head || !tail) return null;
+  return {
+    index: unit.index,
+    text: rest.map((p) => p.text).join(" "),
+    parts: rest,
+    start: head.start,
+    end: tail.end,
+  };
+}
+
+/** 段内句在 unit.text 中的起止（parts 按序用空格拼接成 text） */
+export function listenPartRelRange(
+  unit: ListenSentence,
+  partIndex: number,
+): { start: number; end: number } | null {
+  const parts = listenUnitParts(unit);
+  if (!parts.length || partIndex < 0 || partIndex >= parts.length) return null;
+  let cursor = 0;
+  for (let i = 0; i < parts.length; i += 1) {
+    const len = parts[i]?.text.length;
+    if (i === partIndex) return { start: cursor, end: cursor + len };
+    cursor += len + (i < parts.length - 1 ? 1 : 0);
+  }
+  return null;
+}
+
 /** 按音频时间（ms）在段内选当前句；无 boundary 时退回整段 */
 export function pickListenPartByTime(
   unit: ListenSentence,
@@ -101,7 +163,7 @@ export function pickListenPartByTime(
 ): ListenTextSpan {
   const parts = listenUnitParts(unit);
   const head = parts[0] ?? { text: unit.text, start: unit.start, end: unit.end };
-  if (!boundaries.length) return head;
+  if (!boundaries.length || parts.length <= 1) return head;
 
   let bi = 0;
   for (let i = 0; i < boundaries.length; i += 1) {
@@ -111,13 +173,14 @@ export function pickListenPartByTime(
   const offsets = mapBoundariesToCharOffsets(unit.text, boundaries);
   const cur = offsets[bi];
   if (!cur) return head;
-  const abs = unit.start + cur.start;
-  for (const p of parts) {
-    if (abs >= p.start && abs < p.end) return p;
+  // unit.text 由 parts 用空格拼接，用相对坐标对齐句，避免 plain 空白折叠错位
+  for (let i = 0; i < parts.length; i += 1) {
+    const rel = listenPartRelRange(unit, i);
+    if (!rel) continue;
+    if (cur.start >= rel.start && cur.start < rel.end) return parts[i];
   }
   const tail = parts[parts.length - 1] ?? head;
-  if (abs >= tail.start) return tail;
-  return head;
+  return tail;
 }
 
 /** 当前播放时间落在段内第几句 */
@@ -134,7 +197,7 @@ export function listenPartIndexAtTime(
 
 /**
  * 段内第 partIndex 句的音频起播 ms。
- * 有 WordBoundary 时对齐词起点；否则按字符占比估算（跨段切到上一段末句时用）。
+ * 有 WordBoundary 时对齐词起点；否则按字符占比估算。
  */
 export function listenPartStartOffsetMs(
   unit: ListenSentence,
@@ -145,24 +208,24 @@ export function listenPartStartOffsetMs(
   const parts = listenUnitParts(unit);
   if (!parts.length || partIndex <= 0) return 0;
   const idx = Math.min(partIndex, parts.length - 1);
-  const part = parts[idx];
-  if (!part) return 0;
+  const rel = listenPartRelRange(unit, idx);
+  if (!rel) return 0;
 
   if (boundaries.length) {
     const offsets = mapBoundariesToCharOffsets(unit.text, boundaries);
     for (let i = 0; i < offsets.length; i += 1) {
       const o = offsets[i];
       if (!o) continue;
-      if (unit.start + o.start >= part.start) {
+      if (o.start >= rel.start) {
         return Math.max(0, boundaries[i]?.offsetMs ?? 0);
       }
     }
   }
 
   if (clipDurationMs <= 0) return 0;
-  const span = Math.max(unit.end - unit.start, 1);
-  const rel = Math.min(1, Math.max(0, (part.start - unit.start) / span));
-  return Math.floor(rel * clipDurationMs);
+  const span = Math.max(unit.text.length, 1);
+  const ratio = Math.min(1, Math.max(0, rel.start / span));
+  return Math.floor(ratio * clipDurationMs);
 }
 
 export type ChapterHtmlSegment = {
@@ -305,14 +368,10 @@ export function stripMarkdownForTts(raw: string): string {
       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
       .replace(/^[-*+]\s+/gm, "")
       .replace(/^\d+\.\s+/gm, "")
-      // 网文装饰分隔线（*** / --- / ——— 等），勿朗读
-      .replace(/[*＊]{3,}/g, " ")
-      .replace(/[-—_=~～]{3,}/g, " ")
-      .replace(/[·•.]{3,}/g, " ")
-      // * * * 间隔星号分隔
-      .replace(/(?:^|\s)(?:\*[ \t]*){2,}\*(?=\s|$)/gm, " ")
-      // 整行仅剩装饰符（含单个 _）
-      .replace(/^[ \t]*[*＊\-—_=~～·•.]{1,}[ \t]*$/gm, "")
+      // 仅清「整行」装饰分隔线；勿动句中的 -----（否则高亮 needle 对不上正文）
+      .replace(/^[ \t]*[*＊\-—_=~～·•.]{3,}[ \t]*$/gm, "")
+      // * * * 整行间隔星号分隔
+      .replace(/^[ \t]*(?:\*[ \t]*){2,}\*[ \t]*$/gm, "")
       // 保留 \n 作为段界；其它空白压平
       .replace(/[^\S\n]+/g, " ")
       .replace(/ *\n */g, "\n")
@@ -321,8 +380,8 @@ export function stripMarkdownForTts(raw: string): string {
   );
 }
 
-/** 单段超过此字数则段内回退句切，避免超长合成超时/失败 */
-const MAX_LISTEN_UNIT_CHARS = 600;
+/** 单段超过此字数则切开，避免超长合成超时/失败；多句会拼到此上限内以减少 timed */
+const MAX_LISTEN_UNIT_CHARS = 1200;
 
 const SENTENCE_TERMINATOR = /[.!?。！？；\uFF01\uFF1F]/u;
 const TRAILING_CLOSER_AFTER_SENTENCE_END =
@@ -541,34 +600,56 @@ function expandSpansToMaxChars(
 }
 
 /**
- * 听书朗读单元：按句切开（一句一合成片段）。
- * ponytail: 旧「按段合成 + 段内 seek 切句」会卡住/跳句；上下句改为换单元更稳。
- * 超长句再按 MAX_LISTEN_UNIT_CHARS 切开；parts 仅含自身，供高亮。
+ * 听书朗读单元：先按句切，再拼成更长合成片段（≤ MAX_LISTEN_UNIT_CHARS）。
+ * parts 保留句级坐标供高亮；上下句优先同片段内 seek，少打 timed。
  */
 export function chapterToSentences(html: string): ListenSentence[] {
   const plain = stripMarkdownForTts(htmlToPlainText(html));
   if (!plain) return [];
-  const spans = expandSpansToMaxChars(
+  // 单句超长仍切开
+  const sentenceSpans = expandSpansToMaxChars(
     plain,
     buildSentenceOffsetSpans(plain),
     MAX_LISTEN_UNIT_CHARS,
   );
-  return spans
-    .map(({ start, end }) => {
-      const text = plain.slice(start, end).replace(/\s+/g, " ").trim();
-      if (!text) return null;
-      return {
-        text,
-        start,
-        end,
-        parts: [{ text, start, end }],
-      };
-    })
-    .filter(
-      (s): s is { text: string; start: number; end: number; parts: ListenTextSpan[] } =>
-        !!s && !isDecorativeSeparatorText(s.text),
-    )
-    .map((s, index) => ({ ...s, index }));
+
+  type PackPart = { text: string; start: number; end: number };
+  const units: Array<{ text: string; start: number; end: number; parts: PackPart[] }> = [];
+  let pack: PackPart[] = [];
+  let packChars = 0;
+
+  const flush = () => {
+    if (!pack.length) return;
+    const text = pack.map((p) => p.text).join(" ");
+    if (!text || isDecorativeSeparatorText(text)) {
+      pack = [];
+      packChars = 0;
+      return;
+    }
+    units.push({
+      text,
+      start: pack[0]?.start,
+      end: pack[pack.length - 1]?.end,
+      parts: pack.slice(),
+    });
+    pack = [];
+    packChars = 0;
+  };
+
+  for (const span of sentenceSpans) {
+    const text = plain.slice(span.start, span.end).replace(/\s+/g, " ").trim();
+    if (!text || isDecorativeSeparatorText(text)) continue;
+    // 拼接下一个空格 + 句；首句不加空格
+    const extra = pack.length ? 1 + text.length : text.length;
+    if (pack.length && packChars + extra > MAX_LISTEN_UNIT_CHARS) {
+      flush();
+    }
+    pack.push({ text, start: span.start, end: span.end });
+    packChars += pack.length === 1 ? text.length : 1 + text.length;
+  }
+  flush();
+
+  return units.map((s, index) => ({ ...s, index }));
 }
 
 /** 纯文本字符偏移 → 朗读单元下标（目录节起点 / 阅读进度共用） */
@@ -579,6 +660,19 @@ export function sentenceIndexAtPlainOffset(list: ListenSentence[], offset: numbe
     if (target < list[i]?.end) return i;
   }
   return list.length - 1;
+}
+
+/** 纯文本偏移落在单元内第几句（打包后目录起播用，避免总从 parts[0] 开） */
+export function listenPartIndexAtPlainOffset(unit: ListenSentence, offset: number): number {
+  const parts = listenUnitParts(unit);
+  if (!parts.length) return 0;
+  const target = Math.max(0, offset);
+  for (let i = 0; i < parts.length; i += 1) {
+    const p = parts[i];
+    if (!p) continue;
+    if (target < p.end) return i;
+  }
+  return parts.length - 1;
 }
 
 /**

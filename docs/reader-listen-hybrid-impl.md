@@ -549,3 +549,8 @@ async function onListenTap() {
 - 跟读滚屏精度与 setData 性能见 [reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md)
 - 句级正文高亮见 [reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)
 - 整套复刻指南见 [reader-listen-guide.md](./reader-listen-guide.md)
+
+### 6.4 后续相关变更（口径矫正）
+
+- **倍速 UI**：听书页刻度尺 + 预设到 3.0x，见 [reader-listen-rate-picker-impl.md](./reader-listen-rate-picker-impl.md)。
+- **>2x**：`timed` 的 `speed` 仍钳在 ≤2；超过部分用 `playbackRate` 补速（有意例外，避免 400），见 [reader-listen-rate-synth-cap-impl.md](./reader-listen-rate-synth-cap-impl.md)。

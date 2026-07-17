@@ -31,17 +31,20 @@
             <text class="listen-meta__chapter">{{ chapterTitle }}</text>
           </view>
 
-          <view class="listen-sentence-card">
-            <!-- 滚动条贴卡片右缘：padding 放在内容层，不超出时原生不出现滚动 -->
-            <scroll-view scroll-y enable-flex class="listen-sentence-card__scroll">
-              <view class="listen-sentence-card__pad">
-                <text class="listen-sentence-card__text">
-                  {{
-                    currentSentenceText || (status === "loading" ? "合成中…" : "点击播放开始听书")
-                  }}
-                </text>
-              </view>
-            </scroll-view>
+          <view class="listen-script">
+            <view class="listen-script__body">
+              <scroll-view scroll-y enable-flex class="listen-script__scroll">
+                <view class="listen-script__pad">
+                  <view class="listen-script__clip">
+                    {{ currentClipText || (status === "loading" ? "合成中…" : "点击播放开始听书") }}
+                  </view>
+                </view>
+              </scroll-view>
+            </view>
+            <view v-if="currentSentenceText" class="listen-script__sentence">
+              <text class="listen-script__label">当前句</text>
+              <view class="listen-script__now">{{ currentSentenceText }}</view>
+            </view>
           </view>
         </view>
 
@@ -179,23 +182,18 @@
         :custom-style="popupStyle"
       >
         <wd-config-provider :theme="configTheme" :theme-vars="listenThemeVars">
-          <view class="rate-drawer" :style="paperTokenStyle">
+          <!-- 拦截 touchmove 冒泡，避免滑刻度时底下听书页跟着抖 -->
+          <view class="rate-drawer" :style="rateDrawerStyle" @touchmove.stop="noopTouchMove">
             <view class="voice-drawer__handle" @tap="closeRateDrawer">
               <view class="voice-drawer__handle-bar" />
             </view>
             <text class="voice-drawer__title">语速</text>
-            <view class="rate-drawer__list">
-              <view
-                v-for="r in rates"
-                :key="r"
-                class="rate-item"
-                :class="{ 'rate-item--active': rate === r }"
-                :style="rate === r ? accentBtnStyle : undefined"
-                @tap="onPickRate(r)"
-              >
-                <text class="rate-item__text">{{ r }}x</text>
-              </view>
-            </view>
+            <!-- 滑动中只改展示；停稳/点预设后 emit → 实时改播放倍速 -->
+            <ListenRatePicker
+              :model-value="rate"
+              :active="rateDrawerOpen"
+              @update:model-value="setListenRate"
+            />
           </view>
         </wd-config-provider>
       </wd-popup>
@@ -223,6 +221,7 @@ import type { ConfigProviderThemeVars } from "@wot-ui/ui";
 import { onReady, onShow } from "@dcloudio/uni-app";
 import { computed, ref, watch } from "vue";
 import AppIcon from "@/components/AppIcon.vue";
+import ListenRatePicker from "@/components/ListenRatePicker.vue";
 import ListenSkip15Icon from "@/components/ListenSkip15Icon.vue";
 import { EDGE_TTS_LISTEN_VOICES, getEdgeTtsVoiceNameZh } from "@/constants/edgeTts";
 import { useChapterListen } from "@/hooks/useChapterListen";
@@ -230,10 +229,10 @@ import { useReaderSettings } from "@/hooks/useReaderSettings";
 import { useThemeAccent } from "@/hooks/useTheme";
 import { fetchChapter, fetchChapters } from "@/services/ebook";
 import type { ChapterMeta } from "@/types/ebook";
-import { findActiveTocListIndex, tocItemListenSentenceIndex } from "@/utils/ebook-toc";
+import { findActiveTocListIndex, tocItemListenAnchor } from "@/utils/ebook-toc";
 
 defineOptions({
-  components: { AppIcon, ListenSkip15Icon },
+  components: { AppIcon, ListenRatePicker, ListenSkip15Icon },
 });
 
 const {
@@ -243,13 +242,13 @@ const {
   bookTitle,
   chapterTitle,
   chapterIndex,
+  currentClipText,
   currentSentenceText,
   durationMs,
   timeProgressRatio,
   timeProgressLabel,
   rate,
   rateLabel,
-  rates,
   voice,
   chapterCountLabel,
   togglePlayListen,
@@ -523,6 +522,15 @@ const popupStyle = computed(() => {
   return `background-color:${bg};border-radius:12rpx 12rpx 0 0;`;
 });
 
+/** 倍速抽屉：纸色 token + 主题强调色给刻度组件 */
+const rateDrawerStyle = computed(() => {
+  const accent = String(themeVars.value.buttonPrimaryBg ?? "#dc541b");
+  return {
+    ...paperTokenStyle.value,
+    "--listen-accent": accent,
+  };
+});
+
 function applyListenPageChrome() {
   const { bg } = paper.value;
   const frontColor = isDarkPaper.value ? "#ffffff" : "#000000";
@@ -587,15 +595,14 @@ function closeRateDrawer() {
   rateDrawerOpen.value = false;
 }
 
+function noopTouchMove() {
+  // 仅 stop 冒泡，不 prevent，以免挡住刻度 scroll-view
+}
+
 function onPickVoice(id: string) {
   setListenVoice(id);
   voiceDrawerOpen.value = false;
   uni.showToast({ title: `已切换：${getEdgeTtsVoiceNameZh(id)}`, icon: "none" });
-}
-
-function onPickRate(r: number) {
-  setListenRate(r);
-  rateDrawerOpen.value = false;
 }
 
 /** 原文：回阅读页当前跟读位置 */
@@ -666,16 +673,20 @@ async function resolvePlayingTocIndex(toc: ChapterMeta[]): Promise<number> {
 
 async function seekToTocItem(item: ChapterMeta) {
   let fromSentence = 0;
+  let fromPart = 0;
   try {
     if (bookId.value) {
       const data = await fetchChapter(bookId.value, item.index);
-      fromSentence = tocItemListenSentenceIndex(data.html || "", item);
+      const anchor = tocItemListenAnchor(data.html || "", item);
+      fromSentence = anchor.sentenceIndex;
+      fromPart = anchor.partIndex;
     }
   } catch {
     // 无正文时仍切章
   }
   await seekListenChapter(item.index, {
     fromSentence,
+    fromPart,
     chapterTitle: (item.title || "").trim() || undefined,
   });
 }
@@ -781,43 +792,82 @@ function onNextChapter() {
 }
 
 .listen-meta__chapter {
-  font-size: 34rpx;
+  font-size: 38rpx;
   font-weight: 600;
   color: var(--listen-fg);
   letter-spacing: 1rpx;
 }
 
-.listen-sentence-card {
+.listen-script {
   flex: 1;
-  /* 允许在 flex 布局里被压缩，否则内部 scroll-view 拿不到确定高度 */
   min-height: 0;
   border-radius: var(--listen-radius);
   background: var(--listen-surface);
   box-sizing: border-box;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
-.listen-sentence-card__scroll {
+.listen-script__body {
+  flex: 1;
+  min-height: 0;
+  /* 视口上下留白：滚动中文字也不贴顶/贴「当前句」 */
+  padding: 28rpx 0 24rpx;
+  box-sizing: border-box;
+}
+
+.listen-script__scroll {
   height: 100%;
   width: 100%;
   box-sizing: border-box;
 }
 
-/* 原卡片 padding / 居中挪到内容层，视觉不变，滚动条可贴边 */
-.listen-sentence-card__pad {
-  min-height: 100%;
-  padding: 40rpx 36rpx;
+.listen-script__pad {
+  padding: 0 32rpx;
   box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
-.listen-sentence-card__text {
-  font-size: 40rpx;
-  line-height: 1.75;
+.listen-script__clip {
+  width: 100%;
+  font-size: 38rpx;
+  line-height: 1.7;
   text-align: justify;
+  text-justify: inter-ideograph;
+  text-align-last: left;
+  overflow-wrap: anywhere;
+  word-break: break-all;
   color: var(--listen-fg);
+  box-sizing: border-box;
+}
+
+.listen-script__sentence {
+  flex-shrink: 0;
+  padding: 24rpx 32rpx 36rpx;
+  border-top: 1rpx solid var(--listen-divider);
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.listen-script__label {
+  font-size: 22rpx;
+  line-height: 1.2;
+  color: var(--listen-ink-mute);
+  letter-spacing: 1rpx;
+}
+
+.listen-script__now {
+  width: 100%;
+  font-size: 40rpx;
+  line-height: 1.65;
+  text-align: justify;
+  text-justify: inter-ideograph;
+  text-align-last: left;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  color: var(--listen-fg);
+  box-sizing: border-box;
 }
 
 .listen-footer {
@@ -1059,8 +1109,13 @@ function onNextChapter() {
   transform: scale(0.93);
 }
 
+.listen-play--loading {
+  pointer-events: none;
+  opacity: 0.72;
+}
+
 .listen-play--loading .listen-play__core {
-  opacity: 0.92;
+  opacity: 1;
 }
 
 .listen-row--transport :deep(.listen-play__icon--play) {
@@ -1076,33 +1131,6 @@ function onNextChapter() {
   padding-bottom: env(safe-area-inset-bottom);
   background-color: var(--listen-bg);
   color: var(--listen-fg);
-}
-
-.rate-drawer__list {
-  display: flex;
-  flex-direction: column;
-  gap: 12rpx;
-  padding: 0 28rpx 12rpx;
-}
-
-.rate-item {
-  padding: 28rpx;
-  border-radius: var(--listen-radius);
-  background: var(--listen-surface-strong);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.rate-item__text {
-  font-size: 30rpx;
-  font-weight: 600;
-  color: var(--listen-fg);
-  font-variant-numeric: tabular-nums;
-}
-
-.rate-item--active .rate-item__text {
-  color: inherit;
 }
 
 .voice-drawer {

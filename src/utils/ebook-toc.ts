@@ -2,6 +2,7 @@ import type { ChapterMeta } from "@/types/ebook";
 import {
   chapterToSentences,
   htmlToPlainText,
+  listenPartIndexAtPlainOffset,
   sentenceIndexAtPlainOffset,
   stripMarkdownForTts,
 } from "@/utils/listen-text";
@@ -70,7 +71,7 @@ export function splitHtmlAtTocTitle(
   };
 }
 
-/** 目录项 → 章内滚动比（视觉顶齐回退；听书起播优先用 tocItemListenSentenceIndex） */
+/** 目录项 → 章内滚动比（视觉顶齐回退；听书起播优先用 tocItemListenAnchor） */
 export function tocItemScrollPercent(chapterHtml: string, item: ChapterMeta): number {
   const title = (item.title ?? "").trim();
   if (!title || !chapterHtml) return 0;
@@ -81,14 +82,25 @@ export function tocItemScrollPercent(chapterHtml: string, item: ChapterMeta): nu
   return Math.min(1, Math.max(0, pos / plain.length));
 }
 
-/** 目录项 → 听书起播句（标题所在朗读单元，从节起点播） */
-export function tocItemListenSentenceIndex(chapterHtml: string, item: ChapterMeta): number {
+/** 目录项 → 听书起播锚点（打包单元内落到标题所在句，勿从 parts[0] 开） */
+export function tocItemListenAnchor(
+  chapterHtml: string,
+  item: ChapterMeta,
+): { sentenceIndex: number; partIndex: number } {
   const list = chapterToSentences(chapterHtml);
-  if (!list.length) return 0;
+  if (!list.length) return { sentenceIndex: 0, partIndex: 0 };
   const title = (item.title ?? "").trim();
-  if (!title) return 0;
+  if (!title) return { sentenceIndex: 0, partIndex: 0 };
   const plain = chapterPlainText(chapterHtml);
   const pos = plain.indexOf(title);
-  if (pos < 0) return 0;
-  return sentenceIndexAtPlainOffset(list, pos);
+  if (pos < 0) return { sentenceIndex: 0, partIndex: 0 };
+  const sentenceIndex = sentenceIndexAtPlainOffset(list, pos);
+  const unit = list[sentenceIndex];
+  const partIndex = unit ? listenPartIndexAtPlainOffset(unit, pos) : 0;
+  return { sentenceIndex, partIndex };
+}
+
+/** 目录项 → 听书起播单元下标（兼容；节内句请用 tocItemListenAnchor） */
+export function tocItemListenSentenceIndex(chapterHtml: string, item: ChapterMeta): number {
+  return tocItemListenAnchor(chapterHtml, item).sentenceIndex;
 }

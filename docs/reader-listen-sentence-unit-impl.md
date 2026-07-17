@@ -1,8 +1,12 @@
 # 听书按句合成与上下句切换（实现思路）
 
-> **状态**：已采纳  
+> **状态**：部分被后续方案取代  
 > **关联文件**：`src/utils/listen-text.ts`、`src/services/tts-player.ts`  
-> **来源会话**：[听书切句与起播](c3f8bd51-ec80-47b8-be74-2f558038843f)
+> **来源会话**：[听书切句与起播](c3f8bd51-ec80-47b8-be74-2f558038843f)  
+> **现行口径**：朗读单元已改为「先按句切再打包长片段」+ **紧急短句 / 续播长段** 双轨，见  
+> [reader-listen-dual-track-synth-impl.md](./reader-listen-dual-track-synth-impl.md)、  
+> [reader-listen-skip-debounce-abort-impl.md](./reader-listen-skip-debounce-abort-impl.md)。  
+> 下文保留「一句一单元」阶段的已采纳记录，便于对照演进，**新开发请以双轨文档为准**。
 
 ---
 

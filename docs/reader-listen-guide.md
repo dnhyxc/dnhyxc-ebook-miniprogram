@@ -5,7 +5,8 @@
 > **关联文件**：见 §0.4。  
 > **文档目标**：读懂整套听书如何串起来；按 §5 可在其他 uni-app / 微信小程序项目复刻等价逻辑。  
 > **非目标**：不写 EPUB 解析/书架/主题换肤本体；不写 Web 端听书；不做词级卡拉 OK。  
-> **改动追溯**：[reader-listen-hybrid-impl.md](./reader-listen-hybrid-impl.md)、[reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md)、[reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)、[reader-ebook-toc-listen-impl.md](./reader-ebook-toc-listen-impl.md)、[reader-listen-sentence-unit-impl.md](./reader-listen-sentence-unit-impl.md)、[reader-listen-tts-prefetch-impl.md](./reader-listen-tts-prefetch-impl.md)、[reader-listen-scroll-before-tts-impl.md](./reader-listen-scroll-before-tts-impl.md)、[reader-listen-page-toc-chapter-nav-impl.md](./reader-listen-page-toc-chapter-nav-impl.md)
+> **改动追溯**：[reader-listen-hybrid-impl.md](./reader-listen-hybrid-impl.md)、[reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md)、[reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)、[reader-ebook-toc-listen-impl.md](./reader-ebook-toc-listen-impl.md)、[reader-listen-dual-track-synth-impl.md](./reader-listen-dual-track-synth-impl.md)、[reader-listen-tts-prefetch-impl.md](./reader-listen-tts-prefetch-impl.md)、[reader-listen-skip-debounce-abort-impl.md](./reader-listen-skip-debounce-abort-impl.md)、[reader-listen-toc-part-anchor-impl.md](./reader-listen-toc-part-anchor-impl.md)、[reader-listen-inline-dash-highlight-impl.md](./reader-listen-inline-dash-highlight-impl.md)、[reader-listen-scroll-before-tts-impl.md](./reader-listen-scroll-before-tts-impl.md)、[reader-listen-page-toc-chapter-nav-impl.md](./reader-listen-page-toc-chapter-nav-impl.md)、[reader-listen-rate-picker-impl.md](./reader-listen-rate-picker-impl.md)、[reader-listen-rate-synth-cap-impl.md](./reader-listen-rate-synth-cap-impl.md)  
+> （「一句一单元」历史记录见 [reader-listen-sentence-unit-impl.md](./reader-listen-sentence-unit-impl.md)，现行以双轨合成为准。）
 
 ---
 
@@ -22,23 +23,23 @@
 
 ### 0.2 功能点总表（必填）
 
-| 编号 | 功能点（人话）                   | 用户可感知表现              | 关键实现位置                            | 正文  |
-| ---- | -------------------------------- | --------------------------- | --------------------------------------- | ----- |
-| F1   | 章节 HTML 切成可朗读句子         | （幕后）有句才开播          | `listen-text.ts` → `chapterToSentences` | §4.1  |
-| F2   | 向后端要一句语音二进制           | 「准备朗读…」后出声         | `tts.ts` → `synthesizeEdgeSpeech`       | §4.2  |
-| F3   | 后台音频逐句播、预取、倍速重合成 | 连续听、改倍速不变调        | `tts-player.ts` → `TtsPlayer`           | §4.3  |
-| F4   | 听书会话开始/暂停/停止           | idle↔loading↔playing↔paused | `useChapterListen.ts`                   | §4.4  |
-| F5   | 按当前阅读滚动进度起播           | 不是每次从章首              | `onListenTap` + `scrollPercent`         | §4.5  |
-| F6   | 底栏迷你播控条与倍速             | 上/下句、播控、Nx、展开     | `ListenMiniBar.vue`                     | §4.6  |
-| F7   | 独立听书页 + Edge 音色           | 大字当前句、抽屉选音色      | `pages/listen/index.vue` + `edgeTts.ts` | §4.7  |
-| F8   | 底栏「听」开关与收栏入口         | 点听开/关；收栏右下角「听」 | `reader/index.vue`                      | §4.8  |
-| F9   | 播放时正文跟读到当前句           | 当前句落在上半屏            | 块段 + `scrollToListenSentence`         | §4.9  |
-| F10  | 手动滑打断跟读并「回位」         | 出回位钮；点回位继续跟      | `listenAutoFollow` / 回位 FAB           | §4.10 |
-| F11  | 章末自动下一章；全书听完停       | Toast「已听完本书」或续播   | `advanceChapter`                        | §4.11 |
-| F12  | 锁屏续播；退出小程序停播         | 锁屏仍出声；关小程序停      | BGM + `App.vue` `onAppHide`             | §4.12 |
-| F13  | 离开阅读栈且不在听书页则停       | 回书架不残留播放            | `stopListenIfLeavingReader`             | §4.13 |
-| F14  | 路由与后台 audio 配置            | 听书页可开、后台模式合法    | `pages.json` / `manifest.json`          | §4.14 |
-| F15  | 当前句正文高亮                   | 琥珀色底，切句跟随          | `injectListenSentenceHighlight`         | §4.15 |
+| 编号 | 功能点（人话）                            | 用户可感知表现               | 关键实现位置                            | 正文  |
+| ---- | ----------------------------------------- | ---------------------------- | --------------------------------------- | ----- |
+| F1   | 章节 HTML 切成可朗读句子                  | （幕后）有句才开播           | `listen-text.ts` → `chapterToSentences` | §4.1  |
+| F2   | 向后端要一句语音二进制                    | 「准备朗读…」后出声          | `tts.ts` → `synthesizeEdgeSpeech`       | §4.2  |
+| F3   | 后台音频播、紧急短句/长段接龙、出声后预取 | 连续听、改倍速、少打 timed   | `tts-player.ts` → `TtsPlayer`           | §4.3  |
+| F4   | 听书会话开始/暂停/停止                    | idle↔loading↔playing↔paused  | `useChapterListen.ts`                   | §4.4  |
+| F5   | 按当前阅读滚动进度起播                    | 不是每次从章首               | `onListenTap` + `scrollPercent`         | §4.5  |
+| F6   | 底栏迷你播控条与倍速                      | 上/下句、播控、Nx、展开      | `ListenMiniBar.vue`                     | §4.6  |
+| F7   | 独立听书页 + Edge 音色                    | 上片段下当前句、等待 loading | `pages/listen/index.vue` + `edgeTts.ts` | §4.7  |
+| F8   | 底栏「听」开关与收栏入口                  | 点听开/关；收栏右下角「听」  | `reader/index.vue`                      | §4.8  |
+| F9   | 播放时正文跟读到当前句                    | 当前句落在上半屏             | 块段 + `scrollToListenSentence`         | §4.9  |
+| F10  | 手动滑打断跟读并「回位」                  | 出回位钮；点回位继续跟       | `listenAutoFollow` / 回位 FAB           | §4.10 |
+| F11  | 章末自动下一章；全书听完停                | Toast「已听完本书」或续播    | `advanceChapter`                        | §4.11 |
+| F12  | 锁屏续播；退出小程序停播                  | 锁屏仍出声；关小程序停       | BGM + `App.vue` `onAppHide`             | §4.12 |
+| F13  | 离开阅读栈且不在听书页则停                | 回书架不残留播放             | `stopListenIfLeavingReader`             | §4.13 |
+| F14  | 路由与后台 audio 配置                     | 听书页可开、后台模式合法     | `pages.json` / `manifest.json`          | §4.14 |
+| F15  | 当前句正文高亮                            | 琥珀色底，切句跟随           | `injectListenSentenceHighlight`         | §4.15 |
 
 ### 0.3 架构一图（必填）
 
@@ -342,21 +343,22 @@ export function synthesizeEdgeSpeech(
 
 #### （1）人话说明
 
-拿到 mp3 字节后写到小程序本地临时文件，交给微信「后台音频管理器」播放。一句结束自动下一句；可预取下一句；锁屏控制中心能上一句/下一句。
+拿到 mp3 字节后写到小程序本地临时文件，交给微信「后台音频管理器」播放。起播/切章/改速可先合成**短句**出声；真正 `onPlay` 后再预取**剩余长段或下一单元**；句末自动接龙。锁屏控制中心能上一句/下一句（连点会防抖并 abort 旧请求）。
 
 #### （2）实现思路
 
-BGM 是全局单例，监听只绑一次。赋值 `src` 即开播。`playGen` 丢弃过期异步。不信任 `onError` 弹 toast。
+BGM 是全局单例，监听只绑一次。赋值 `src` 即开播。`playGen` 丢弃过期异步。预取挂在 `markPlaying`，不与首句 timed 并行。详见双轨合成与预取实现文档。
 
 #### （3）问题与对策
 
-对应 P1、P5、P6、P7。
+对应 P1、P5、P6、P7；连点刷 timed 见 skip-debounce 文档。
 
 #### （4）实现过程
 
 1. `ensureBgm` 绑 ended/play/pause/prev/next
 2. `unlockFromUserGesture` 在点击栈播静音片
-3. `playCurrent` 合成→写文件→元数据→`bgm.src`→预取下一句
+3. `playCurrent` 合成→写文件→元数据→`bgm.src`
+4. `markPlaying` 后再 `schedulePrefetch` 下一段
 
 #### （5）关键代码
 
@@ -685,21 +687,30 @@ async function onListenTap() {
 
 #### （1）人话说明
 
-「展开」进入大字听书页：当前句可滚动阅读；底部播控、语速、Edge 音色抽屉。选过的音色会记住。
+「展开」进入听书页：上方展示当前 TTS **合成片段**（可滚动），底部钉住 **当前句**；播控等待出声时播放钮 loading 且禁用。底部另有语速、Edge 音色抽屉。选过的音色会记住。
 
 #### （2）实现思路
 
-页只绑同一 hook；音色表在 `edgeTts.ts`；本地 key `ebook_edge_tts_voice`。抽屉用 `wd-popup` + `root-portal` 避免被页面裁切。
+页只绑同一 hook；音色表在 `edgeTts.ts`；本地 key `ebook_edge_tts_voice`。抽屉用 `wd-popup` + `root-portal` 避免被页面裁切。片段文案来自 `onClipTextChange` → `currentClipText`；当前句仍跟 `onHighlightChange`。等待出声走 `onWaiting` → `loading`，真正出声 `onPlay` → `playing`。
 
 #### （3）问题与对策
 
-微信 `overflow:hidden` 会裁自绘 fixed 层 → 用组件 popup + root-portal。
+- 微信 `overflow:hidden` 会裁自绘 fixed 层 → 用组件 popup + root-portal。
+- `<text>` 两端对齐不可靠 → 片段/当前句用块级 `view` + `text-justify: inter-ideograph`。
+- `scroll-view` padding 不可靠 → 上下留白放在外层 `listen-script__body`。
+- 句切换/`playFrom.then` 曾过早 `playing` → 去掉，改由 `onWaiting`/`onPlay` 驱动。
 
 #### （4）实现过程
 
 1. `expandListenPage` navigateTo
-2. 页内展示 `currentSentenceText`（scroll-view，padding 在内容层让滚动条贴边）
+2. 页内一卡：`currentClipText`（上、可滚）+ `currentSentenceText`（下、钉底）
 3. `setListenVoice` 校验、存 storage、player 重合成
+4. `playCurrent` 入口 `onWaiting`；按钮 `status===loading` 时转圈并 `pointer-events: none`
+
+更细的改前/改后见：
+
+- [reader-listen-page-script-display-impl.md](./reader-listen-page-script-display-impl.md)
+- [reader-listen-play-waiting-loading-impl.md](./reader-listen-play-waiting-loading-impl.md)
 
 #### （5）关键代码
 

@@ -28,7 +28,8 @@ export type StartListenOptions = {
   getChapter: (index: number) => Promise<ListenChapterPayload>;
 };
 
-const LISTEN_RATES = [0.75, 1, 1.25, 1.5, 2] as const;
+/** 阅读页迷你条 / 听书页预设圆钮；刻度另支持 0.5–3.0 / 0.1 */
+const LISTEN_RATES = [0.8, 1, 1.5, 2, 3] as const;
 const VOICE_STORAGE_KEY = "ebook_edge_tts_voice";
 
 function loadStoredVoice(): string {
@@ -54,6 +55,9 @@ const sentenceIndex = ref(0);
 const highlightSpan = ref<ListenTextSpan | null>(null);
 const rate = ref(1);
 const voice = ref(loadStoredVoice());
+/** 当前 TTS 合成片段全文（短句或整段/剩余长段） */
+const currentClipText = ref("");
+/** 当前正在播的句（段内高亮句） */
 const currentSentenceText = ref("");
 /** 章内播放位置/总时长（估算+实测），进度条用 */
 const positionMs = ref(0);
@@ -91,6 +95,7 @@ function resetSession() {
   sentences.value = [];
   sentenceIndex.value = 0;
   highlightSpan.value = null;
+  currentClipText.value = "";
   currentSentenceText.value = "";
   chapterTitle.value = "";
   chapterTotal.value = 0;
@@ -104,22 +109,30 @@ function applyHighlight(span: ListenTextSpan) {
   currentSentenceText.value = span.text;
 }
 
-function applySentence(index: number) {
+function applySentence(index: number, partIndex = 0) {
   sentenceIndex.value = index;
   const unit = sentences.value[index];
-  const first = unit?.parts[0];
-  if (first) applyHighlight(first);
+  const parts = unit?.parts;
+  const part = parts?.length ? parts[Math.min(Math.max(0, partIndex), parts.length - 1)] : null;
+  if (part) applyHighlight(part);
   else if (unit) {
     applyHighlight({ text: unit.text, start: unit.start, end: unit.end });
   } else {
     highlightSpan.value = null;
     currentSentenceText.value = "";
   }
+  // 合成回调到来前先用整段占位；真正出声后由 onClipTextChange 覆盖为短句/长段
+  if (unit) currentClipText.value = unit.text;
 }
 
 async function loadAndPlayChapter(
   index: number,
-  start: { fromSentence?: number; scrollPercent?: number; chapterTitle?: string } = {},
+  start: {
+    fromSentence?: number;
+    fromPart?: number;
+    scrollPercent?: number;
+    chapterTitle?: string;
+  } = {},
 ): Promise<void> {
   if (!getChapterFn || !bookId.value) return;
   const gen = sessionGen;
@@ -131,7 +144,7 @@ async function loadAndPlayChapter(
   const list = chapterToSentences(chapter.html);
   if (!list.length) {
     if (chapter.nextIndex != null) {
-      await loadAndPlayChapter(chapter.nextIndex, { fromSentence: 0 });
+      await loadAndPlayChapter(chapter.nextIndex, { fromSentence: 0, fromPart: 0 });
       return;
     }
     uni.showToast({ title: "本章无可朗读文本", icon: "none" });
@@ -143,12 +156,13 @@ async function loadAndPlayChapter(
     start.fromSentence != null
       ? Math.min(Math.max(0, start.fromSentence), list.length - 1)
       : sentenceIndexAtScrollPercent(list, start.scrollPercent ?? 0);
+  const startPart = Math.max(0, start.fromPart ?? 0);
 
   chapterIndex.value = index;
   const titleOverride = (start.chapterTitle ?? "").trim();
   chapterTitle.value = titleOverride || chapter.title || `第 ${index + 1} 章`;
   sentences.value = list;
-  applySentence(startIdx);
+  applySentence(startIdx, startPart);
 
   ttsPlayer.configure({
     bookId: bookId.value,
@@ -157,15 +171,18 @@ async function loadAndPlayChapter(
     chapterTitle: chapterTitle.value,
     coverUrl: coverUrl.value,
     sentences: list,
-    onSentenceChange: (i) => {
+    onSentenceChange: (i, part) => {
       if (gen !== sessionGen) return;
-      applySentence(i);
+      applySentence(i, part ?? 0);
       syncListenProgress();
-      if (status.value === "loading") status.value = "playing";
     },
     onHighlightChange: (span) => {
       if (gen !== sessionGen) return;
       applyHighlight(span);
+    },
+    onClipTextChange: (text) => {
+      if (gen !== sessionGen) return;
+      currentClipText.value = text;
     },
     onChapterEnd: () => {
       if (gen !== sessionGen) return;
@@ -175,6 +192,11 @@ async function loadAndPlayChapter(
       if (gen !== sessionGen) return;
       uni.showToast({ title: message, icon: "none" });
       status.value = "paused";
+    },
+    onWaiting: () => {
+      if (gen !== sessionGen) return;
+      if (status.value === "idle") return;
+      status.value = "loading";
     },
     onPlay: () => {
       if (gen !== sessionGen) return;
@@ -196,11 +218,8 @@ async function loadAndPlayChapter(
   syncListenProgress();
   startProgressTimer();
 
-  // 不 await 合成：阅读页可立刻跟读滚屏，避免目录切章卡在章首等 TTS
-  void ttsPlayer.playFrom(startIdx).then(() => {
-    if (gen !== sessionGen) return;
-    if (status.value === "loading") status.value = "playing";
-  });
+  // 不 await 合成：阅读页可立刻跟读滚屏；真正出声由 onPlay 切 playing
+  void ttsPlayer.playFrom(startIdx, startPart);
 }
 
 async function advanceChapter(): Promise<void> {
@@ -239,6 +258,7 @@ export async function startListen(opts: StartListenOptions): Promise<void> {
   ttsPlayer.setRate(1, { play: false });
   // 先进入 loading，立刻露出迷你条，再拉章合成
   status.value = "loading";
+  currentClipText.value = "";
   currentSentenceText.value = "准备朗读…";
   chapterTitle.value = "";
   await loadAndPlayChapter(opts.chapterIndex, {
@@ -250,7 +270,13 @@ export async function startListen(opts: StartListenOptions): Promise<void> {
 export async function seekListenChapter(
   index: number,
   fromSentenceOrOpts:
-    number | { fromSentence?: number; scrollPercent?: number; chapterTitle?: string } = 0,
+    | number
+    | {
+        fromSentence?: number;
+        fromPart?: number;
+        scrollPercent?: number;
+        chapterTitle?: string;
+      } = 0,
 ): Promise<void> {
   if (status.value === "idle" || !getChapterFn) return;
   sessionGen += 1;
@@ -258,10 +284,11 @@ export async function seekListenChapter(
   // 切章也在点击栈里解锁，避免体验版异步 play 失败
   ttsPlayer.unlockFromUserGesture();
   status.value = "loading";
+  currentClipText.value = "";
   currentSentenceText.value = "准备朗读…";
   const start =
     typeof fromSentenceOrOpts === "number"
-      ? { fromSentence: fromSentenceOrOpts }
+      ? { fromSentence: fromSentenceOrOpts, fromPart: 0 }
       : fromSentenceOrOpts;
   await loadAndPlayChapter(index, start);
 }
@@ -293,31 +320,32 @@ export function stopListen(): void {
 
 export function prevListenSentence(): void {
   if (status.value === "idle") return;
-  status.value = "playing";
   ttsPlayer.prevSentence();
 }
 
 export function nextListenSentence(): void {
   if (status.value === "idle") return;
-  status.value = "playing";
   ttsPlayer.nextSentence();
 }
 
 /** 跳到章内指定句（进度条点选 / 同 spine 目录切节） */
-export function seekListenSentence(index: number, opts?: { chapterTitle?: string }): void {
+export function seekListenSentence(
+  index: number,
+  opts?: { chapterTitle?: string; fromPart?: number },
+): void {
   if (status.value === "idle" || !sentences.value.length) return;
   const i = Math.max(0, Math.min(index, sentences.value.length - 1));
   const title = (opts?.chapterTitle ?? "").trim();
   if (title) chapterTitle.value = title;
-  status.value = "playing";
-  void ttsPlayer.playFrom(i);
+  const part = Math.max(0, opts?.fromPart ?? 0);
+  applySentence(i, part);
+  void ttsPlayer.playFrom(i, part);
   syncListenProgress();
 }
 
 /** 章内快进/快退（毫秒，微信听书 ±15s） */
 export function seekListenBy(deltaMs: number): void {
   if (status.value === "idle") return;
-  status.value = "playing";
   ttsPlayer.seekBy(deltaMs);
   syncListenProgress();
   startProgressTimer();
@@ -326,7 +354,6 @@ export function seekListenBy(deltaMs: number): void {
 /** 拖到章内绝对时间位置 */
 export function seekListenTo(ms: number): void {
   if (status.value === "idle") return;
-  status.value = "playing";
   void ttsPlayer.seekTo(ms);
   syncListenProgress();
   startProgressTimer();
@@ -360,11 +387,17 @@ export async function nextListenChapter(): Promise<void> {
   await seekListenChapter(chapterIndex.value + 1, 0);
 }
 
+/** 展示立刻改；合成合并到停稳后一次（>2x 且合成档不变时 player 内不会打 timed） */
+let rateSynthTimer: ReturnType<typeof setTimeout> | null = null;
+
 export function setListenRate(next: number): void {
-  rate.value = next;
-  ttsPlayer.setRate(next);
-  // setRate 会按新语速重合成当前句并开播
-  if (status.value !== "idle") status.value = "playing";
+  const n = Math.round(next * 10) / 10;
+  rate.value = n;
+  if (rateSynthTimer != null) clearTimeout(rateSynthTimer);
+  rateSynthTimer = setTimeout(() => {
+    rateSynthTimer = null;
+    ttsPlayer.setRate(rate.value);
+  }, 360);
 }
 
 export function setListenVoice(next: string): void {
@@ -376,12 +409,13 @@ export function setListenVoice(next: string): void {
     // ignore
   }
   ttsPlayer.setVoice(next);
-  if (status.value !== "idle") status.value = "playing";
 }
 
 export function cycleListenRate(): void {
-  const idx = LISTEN_RATES.indexOf(rate.value as (typeof LISTEN_RATES)[number]);
-  const next = LISTEN_RATES[(idx + 1) % LISTEN_RATES.length] ?? 1;
+  const list = LISTEN_RATES as readonly number[];
+  let idx = list.findIndex((r) => Math.abs(r - rate.value) < 0.05);
+  if (idx < 0) idx = 0;
+  const next = list[(idx + 1) % list.length] ?? 1;
   setListenRate(next);
 }
 
@@ -426,7 +460,7 @@ export function useChapterListen() {
     if (durationMs.value <= 0) return "00:00 / 00:00";
     return `${formatListenClock(positionMs.value)} / ${formatListenClock(durationMs.value)}`;
   });
-  const rateLabel = computed(() => `${rate.value}x`);
+  const rateLabel = computed(() => `${Number(rate.value).toFixed(1)}x`);
   const voiceLabel = computed(() => getEdgeTtsVoiceNameZh(voice.value));
   const chapterCountLabel = computed(() => {
     if (chapterTotal.value > 0) return `${chapterTotal.value} 章`;
@@ -446,6 +480,7 @@ export function useChapterListen() {
     sentenceIndex,
     highlightSpan,
     sentenceCount,
+    currentClipText,
     currentSentenceText,
     rate,
     rateLabel,

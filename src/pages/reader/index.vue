@@ -359,7 +359,7 @@ import {
 import {
   findActiveTocListIndex,
   splitHtmlAtTocTitle,
-  tocItemListenSentenceIndex,
+  tocItemListenAnchor,
   tocItemScrollPercent,
 } from "@/utils/ebook-toc";
 import { stripReaderColorStyles } from "@/utils/reader-html";
@@ -1739,7 +1739,7 @@ async function jumpListenToTocItem(item: ChapterMeta) {
     if (block.tocSplit) block.tocSplit = null;
 
     const scrollPercent = tocItemScrollPercent(block.html, item);
-    const fromSentence = tocItemListenSentenceIndex(block.html, item);
+    const anchor = tocItemListenAnchor(block.html, item);
     persistProgress(scrollPercent);
 
     // 1) 立刻章级滚到目录位（此时多半仍是整章 mp-html，不依赖分段）
@@ -1747,19 +1747,19 @@ async function jumpListenToTocItem(item: ChapterMeta) {
 
     // 2) 再切播放（跨章 await 合成；画面已在目标附近）
     if (sameSpine) {
-      seekListenSentence(fromSentence, { chapterTitle: title || undefined });
+      seekListenSentence(anchor.sentenceIndex, {
+        chapterTitle: title || undefined,
+        fromPart: anchor.partIndex,
+      });
     } else {
       await seekListenChapter(index, {
-        fromSentence,
+        fromSentence: anchor.sentenceIndex,
+        fromPart: anchor.partIndex,
         chapterTitle: title || undefined,
       });
-      // 拆段 remount 可能甩顶：合成返回后立刻再钉一次
+      // 拆段 remount 可能甩顶：按标题位置再钉一次（勿用单元占比，会滚到节上方）
       await nextTick();
-      await scrollToChapter(
-        index,
-        listenSentenceScrollPercent(listenSentenceIndex.value),
-        "listen",
-      );
+      await scrollToChapter(index, scrollPercent, "listen");
     }
 
     listenHlChap = -1;

@@ -7,7 +7,7 @@ export { DEFAULT_EDGE_TTS_VOICE };
 
 export type EdgeSpeechOptions = {
   voice?: string;
-  /** 合成语速 0.5–2；听书倍速走此字段，避免 playbackRate 变调 */
+  /** 合成语速 0.5–2（接口上限）；更高听书倍速由播放器 playbackRate 补 */
   speed?: number;
   vol?: number;
   pitch?: number;

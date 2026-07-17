@@ -1,16 +1,17 @@
 # 听书 TTS 预取与合成失败透出（实现思路）
 
-> **状态**：已采纳  
+> **状态**：已采纳（含后续修订）  
 > **关联文件**：`src/services/tts-player.ts`、`src/services/tts.ts`  
-> **来源会话**：[听书切句与起播](c3f8bd51-ec80-47b8-be74-2f558038843f)
+> **来源会话**：[听书切句与起播](c3f8bd51-ec80-47b8-be74-2f558038843f)  
+> **相关文档**：[双轨合成](./reader-listen-dual-track-synth-impl.md)
 
 ---
 
 ## 1. 需求背景（必填）
 
-起播瞬间连续打多次 `/edge/speech/timed`；预取失败还会以未捕获异常冒成 `MiniProgramError 语音合成失败`。需要起播只先合成当前句，成功后再预取；失败走 toast，不抛穿框架。
+起播瞬间连续打多次 `/edge/speech/timed`；预取失败还会冒成未捕获异常。需要：**首句只打一次 timed**；等**真正开始播放**后再预取下一段；每次只备 1 段；失败 toast 不抛穿。
 
-成功标准：点听书首包只见当前句 timed；预取延迟错开；合成失败 toast，不崩控制台。
+成功标准：起播/切章/改倍速先 1 条 timed；出声后再出现预取；预取完成后不链式立刻打下一段。
 
 ---
 
@@ -20,23 +21,34 @@
 
 **用户：**
 
-> 点击听书开始听书时，会连续调三次接口 timed
+> 点击听书开始听书时，会连续调三次接口 timed  
+> 开启听书/切换章节/切换倍速时会立即调用两次 timed 接口。正常应该等首句开始播放时在调用预取接口
 
 **Agent 回答摘要（已落地）：**
 
-- `PREFETCH_AHEAD`：2 → 1
-- 起播前不再立刻 `prefetchAhead`；当前句开播后 `schedulePrefetch`（约 320ms）
+- 去掉与首句并行的预取
+- 预取挂在 `markPlaying`（`onPlay` / watchdog 真正出声）之后
+- 每次 `prefetchAhead` 只备「下一段」（短句→剩余 tail；长段→下一单元）
 
-### 2.2 合成失败冒成 MiniProgramError
+### 2.2 预取结束不要立刻打下一段
+
+**用户：**
+
+> 会在预取接口调用结束后，立即调用下一个预取接口。我希望在预取内容开始播放时再调用下一个预取
+
+**Agent 回答摘要（已落地）：**
+
+- `prefetchAhead` 只合成一份；下一段等该段 `markPlaying` 再调度
+
+### 2.3 合成失败冒成 MiniProgramError
 
 **用户：**（日志）
 
-> `<Error: MiniProgramError 语音合成失败> ... at TtsPlayer...`
+> `<Error: MiniProgramError 语音合成失败>`
 
 **Agent 回答摘要（已落地）：**
 
-- `startSpeech` / `takeSpeech` 失败返回 `null`，写入 `lastSynthError`
-- `playCurrent` 用 `onError` toast；预取路径 `.catch` 吞掉
+- 失败返回 `null` + `lastSynthError`；预取 `.catch` 吞掉
 
 ---
 
@@ -44,154 +56,102 @@
 
 ### 3.1 总体策略
 
-预取仍保留（防切句卡顿），但与首包错开；失败不 throw，与「一句一合成」请求变密兼容。
+首包与预取串行错开；预取触发点是**播放开始**而不是「合成成功赋 src」或「上一段预取 HTTP 结束」。
 
 ### 3.2 控制流
 
 ```mermaid
 sequenceDiagram
-  participant UI as 起播
+  participant UI as 起播/切章/改速
   participant P as playCurrent
   participant API as timed
-  UI->>P: playFrom(i)
-  P->>API: 仅当前句
+  participant M as markPlaying
+  UI->>P: playFrom
+  P->>API: 仅当前首句/短句
   API-->>P: audio
-  P->>P: schedulePrefetch(+320ms)
-  P->>API: 预取 i+1
+  P->>P: bgm.src
+  Note over M: onPlay / watchdog
+  M->>API: 预取下一段（1 次）
 ```
 
 ### 3.3 分点设计
 
-1. **窗口**：只预取前方 1 句。
-2. **时机**：当前句 `prepareFile` 成功并赋 `bgm.src` 后再调度。
-3. **错误**：取消不覆盖真实错误；UI 只读 `lastSynthError`。
+1. **`schedulePrefetch`**：由 `markPlaying` 调用。
+2. **`nextPrefetchText`**：短句轨→tail；长段轨→`sentences[i+1]`。
+3. **错误**：取消不覆盖真实错误。
 
 ---
 
 ## 4. 改动点对比：改前 / 改后（必填）
 
-### 4.1 改动点：预取窗口与延迟调度
+### 4.1 改动点：预取时机改为真正出声后
 
-- **位置**：`src/services/tts-player.ts` → 常量 / `schedulePrefetch` / `playCurrent`
-- **差异摘要**：起播不再并行打满「当前 + 预取 2」。
+- **位置**：`src/services/tts-player.ts` → `markPlaying` / `playCurrent`
+- **差异摘要**：起播不再双 timed。
 
 #### 改动前
 
 ```ts
-// 预取前方 2 句 → 起播易连打 3 次 timed
-const PREFETCH_AHEAD = 2;
-
-// playCurrent 内：合成当前句之前就预取
-private async playCurrent(): Promise<void> {
-  // 保留当前与预取 key
-  const keep = this.keepKeysFrom(this.sentenceIndex);
-  // 清掉窗口外任务
-  this.abortSpeechExcept(keep);
-  // 立刻预取 → 与当前句并行打 timed
-  this.prefetchAhead(this.sentenceIndex);
-  // 再合成当前句
-  const prepared = await this.prepareFile(sentence.text, gen);
-  // …
-  if (gen === this.playGen) {
-    // 成功后再预取一次（重复）
-    this.prefetchAhead(this.sentenceIndex);
-  }
+// 短句合成同时并行预取 → 起播双 timed
+if (kind === "part") {
+  void this.prefetchAhead(this.sentenceIndex, gen);
 }
+const prepared = await this.prepareFile(targetText, gen);
+// …
+// 赋 src 后立刻预取长段
+if (kind === "unit") this.schedulePrefetch(this.sentenceIndex);
 ```
 
 #### 改动后
 
 ```ts
-// 预取段数：起播只打当前句；成功后再预取 1 段
-const PREFETCH_AHEAD = 1;
-// 当前句开播后再预取，错开首包
-const PREFETCH_DELAY_MS = 320;
-
-// 当前句合成成功后再预取
-private schedulePrefetch(fromIndex: number): void {
-  // 清掉未触发的定时器
-  this.clearPrefetchTimer();
-  // 捕获 generation，避免过期回调
-  const gen = this.playGen;
-  // 延迟预取
-  this.prefetchTimer = setTimeout(() => {
-    // 定时器已触发
-    this.prefetchTimer = null;
-    // 已切句/停播则作废
-    if (gen !== this.playGen) return;
-    // 预取前方窗口
-    this.prefetchAhead(fromIndex);
-  }, PREFETCH_DELAY_MS);
-}
-
-// playCurrent：先只合成当前句
-const prepared = await this.prepareFile(sentence.text, gen);
-// …
-if (gen === this.playGen) {
-  // 赋 src 后再调度预取
+private markPlaying(gen: number): void {
+  // 校验仍是本轮播放
+  if (gen !== this.playGen) return;
+  // 同 gen 只标记一次
+  if (this.playedGen === gen) return;
+  this.playedGen = gen;
+  this.expectingPlayback = false;
+  this.clearPlayWatchdog();
+  this.startHighlightTick(true);
+  this.onPlay?.();
+  // 首句真正出声后再预取
   this.schedulePrefetch(this.sentenceIndex);
 }
+
+// playCurrent：只 prepareFile 当前文本，不在此处预取
+const prepared = await this.prepareFile(targetText, gen);
 ```
 
-### 4.2 改动点：合成失败不 throw
+### 4.2 改动点：每次只预取一段
 
-- **位置**：`src/services/tts-player.ts` → `startSpeech` / `takeSpeech` / `playCurrent`
-- **差异摘要**：预取失败不再变成未捕获 Promise；播放失败走 `onError`。
+- **位置**：`src/services/tts-player.ts` → `prefetchAhead`
+- **差异摘要**：预取完成不链式打下一段。
 
 #### 改动前
 
 ```ts
-// 概念：失败向上抛，预取 catch 不住时冒 MiniProgramError
-private async takeSpeech(text: string, gen: number): Promise<SpeechPayload> {
-  // 第二次仍失败则抛
-  const again = await this.startSpeech(text);
-  // 无音频直接 throw
-  if (!again?.audio.byteLength) throw new Error("语音合成失败");
-  // 返回
-  return again;
+// 先 await 当前剩余，再 for 循环预取 i+1（HTTP 一结束就打下一段）
+await this.prepareFile(tailText, gen);
+for (let i = 1; i <= PREFETCH_AHEAD; i += 1) {
+  await this.prepareFile(s.text, gen);
 }
 ```
 
 #### 改动后
 
 ```ts
-// 最近一次合成失败原因（供 UI toast）
-private lastSynthError = "";
-
-private startSpeech(text: string): Promise<SpeechPayload | null> {
-  // …
-  const promise = req.promise
-    .then((result) => {
-      // 空音频记错误
-      if (!result.audio?.byteLength) {
-        this.lastSynthError = "语音合成失败：无音频";
-        return null;
-      }
-      // 写入缓存
-      const payload: SpeechPayload = {
-        audio: result.audio,
-        boundaries: result.boundaries ?? [],
-      };
-      this.speechCache.set(key, payload);
-      return payload;
-    })
-    .catch((err: unknown) => {
-      // 规范化文案
-      const msg = err instanceof Error ? err.message : "语音合成失败";
-      // 取消不覆盖真实错误
-      if (!/取消/.test(msg)) this.lastSynthError = msg;
-      // 不向上抛
-      return null;
-    });
-  // …
-  return promise;
-}
-
-// playCurrent：prepared 为空则 toast
-if (!prepared) {
-  const msg = this.lastSynthError || "语音合成失败";
-  if (!/取消/.test(msg)) this.onError?.(msg);
-  return;
+private async prefetchAhead(fromIndex: number, gen = this.playGen): Promise<void> {
+  // 代次过期则放弃
+  if (gen !== this.playGen) return;
+  // 只取「紧接着要播」的一段文本
+  const text = this.nextPrefetchText(fromIndex);
+  if (!text) return;
+  const key = this.cacheKey(text);
+  // 已有缓存则不再请求
+  if (this.fileCache.has(key) || this.speechCache.has(key)) return;
+  // 只打这一次；下一段等该内容 markPlaying
+  await this.prepareFile(text, gen).catch(() => undefined);
 }
 ```
 
@@ -199,9 +159,9 @@ if (!prepared) {
 
 ## 5. 验证要点（建议）
 
-- [ ] 起播：网络面板首段时间内只有 1 次 timed，约 320ms 后再见预取
-- [ ] 断网/后端失败：toast「语音合成失败…」，控制台无未捕获 MiniProgramError
-- [ ] 切下一句仍能命中预取缓存（体感无整段空白）
+- [ ] 起播/切章/改倍速：先 1 条 timed，出声后再 1 条预取
+- [ ] 预取结束后不会马上出现第三条（除非下一段已开播）
+- [ ] 合成失败 toast，无 MiniProgramError 抛穿
 
 ---
 
@@ -209,18 +169,13 @@ if (!prepared) {
 
 ### 6.1 结论
 
-- **是否影响已有功能点**：是 — 预取激进程度下降；错误展示路径变化。
-- **是否影响既有正常逻辑**：局部 — 连点切句时偶发多等一包（可接受）。
+- **是否影响已有功能点**：是 — 预取更晚启动，短句播完后接龙空窗可能略增（换双轨 tail 缓存缓解）
+- **是否影响既有正常逻辑**：局部 — 与双轨合成、切句 abort 共用 jobs 表
 
-### 6.2 影响点清单
+### 6.2 影响点明细
 
-| 影响对象           | 影响方式                                                       | 严重程度   | 回归建议         |
-| ------------------ | -------------------------------------------------------------- | ---------- | ---------------- |
-| 起播首包           | 并行请求减少                                                   | 低（正面） | 抓包确认         |
-| 切句连贯           | 预取仅 1 句                                                    | 低         | 快速连点 `>>`    |
-| `onError` / toast  | 失败必弹（非取消）                                             | 低         | 模拟失败         |
-| 句单元变多后的 QPS | 与 [sentence-unit](./reader-listen-sentence-unit-impl.md) 叠加 | 中         | 长章听书观察限流 |
-
-### 6.3 无影响说明
-
-未改 Edge TTS 协议本身；仅客户端调度与错误透出。
+| #   | 影响对象        | 影响方式      | 程度 | 回归建议           |
+| --- | --------------- | ------------- | ---- | ------------------ |
+| 1   | 起播 timed 数量 | 出声前仅 1 次 | 高   | 网络面板           |
+| 2   | 短句→长段接龙   | 预取更晚      | 中   | 短句是否播完才接上 |
+| 3   | 失败处理        | 仍不 throw    | 低   | 断网 toast         |

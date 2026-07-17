@@ -19,7 +19,7 @@
             custom-class="listen-mini__btn"
             @click.stop="pickRate(r)"
           >
-            {{ r }}x
+            {{ Number(r).toFixed(1) }}x
           </wd-button>
         </view>
       </view>
