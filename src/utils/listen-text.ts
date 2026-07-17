@@ -8,13 +8,13 @@ export type ListenTextSpan = {
 };
 
 export type ListenSentence = {
-  /** 送 TTS 的文本（整段；超长时为段内切出的一片） */
+  /** 送 TTS 的文本（一句；超长句再切开） */
   text: string;
   index: number;
   /** 在章节纯文本中的起止（与 htmlToPlainText + stripMarkdownForTts 同一坐标系） */
   start: number;
   end: number;
-  /** 段内句界：合成按段，高亮按句（由 Edge WordBoundary 时间戳驱动） */
+  /** 高亮片段；一句一单元时通常仅含自身 */
   parts: ListenTextSpan[];
 };
 
@@ -87,15 +87,20 @@ export function locateSpeechOffset(
   return { index: durationsMs.length - 1, offsetMs: 0 };
 }
 
+/** 段内句列表（无 parts 时整段算一句） */
+export function listenUnitParts(unit: ListenSentence): ListenTextSpan[] {
+  if (unit.parts.length > 0) return unit.parts;
+  return [{ text: unit.text, start: unit.start, end: unit.end }];
+}
+
 /** 按音频时间（ms）在段内选当前句；无 boundary 时退回整段 */
 export function pickListenPartByTime(
   unit: ListenSentence,
   boundaries: ListenBoundary[],
   timeMs: number,
 ): ListenTextSpan {
-  const fallback: ListenTextSpan = { text: unit.text, start: unit.start, end: unit.end };
-  const parts = unit.parts.length > 0 ? unit.parts : [fallback];
-  const head = parts[0] ?? fallback;
+  const parts = listenUnitParts(unit);
+  const head = parts[0] ?? { text: unit.text, start: unit.start, end: unit.end };
   if (!boundaries.length) return head;
 
   let bi = 0;
@@ -113,6 +118,51 @@ export function pickListenPartByTime(
   const tail = parts[parts.length - 1] ?? head;
   if (abs >= tail.start) return tail;
   return head;
+}
+
+/** 当前播放时间落在段内第几句 */
+export function listenPartIndexAtTime(
+  unit: ListenSentence,
+  boundaries: ListenBoundary[],
+  timeMs: number,
+): number {
+  const parts = listenUnitParts(unit);
+  const span = pickListenPartByTime(unit, boundaries, timeMs);
+  const i = parts.findIndex((p) => p.start === span.start && p.end === span.end);
+  return i >= 0 ? i : 0;
+}
+
+/**
+ * 段内第 partIndex 句的音频起播 ms。
+ * 有 WordBoundary 时对齐词起点；否则按字符占比估算（跨段切到上一段末句时用）。
+ */
+export function listenPartStartOffsetMs(
+  unit: ListenSentence,
+  boundaries: ListenBoundary[],
+  partIndex: number,
+  clipDurationMs = 0,
+): number {
+  const parts = listenUnitParts(unit);
+  if (!parts.length || partIndex <= 0) return 0;
+  const idx = Math.min(partIndex, parts.length - 1);
+  const part = parts[idx];
+  if (!part) return 0;
+
+  if (boundaries.length) {
+    const offsets = mapBoundariesToCharOffsets(unit.text, boundaries);
+    for (let i = 0; i < offsets.length; i += 1) {
+      const o = offsets[i];
+      if (!o) continue;
+      if (unit.start + o.start >= part.start) {
+        return Math.max(0, boundaries[i]?.offsetMs ?? 0);
+      }
+    }
+  }
+
+  if (clipDurationMs <= 0) return 0;
+  const span = Math.max(unit.end - unit.start, 1);
+  const rel = Math.min(1, Math.max(0, (part.start - unit.start) / span));
+  return Math.floor(rel * clipDurationMs);
 }
 
 export type ChapterHtmlSegment = {
@@ -490,42 +540,60 @@ function expandSpansToMaxChars(
   return out;
 }
 
-function partsForUnitSpan(plain: string, start: number, end: number): ListenTextSpan[] {
-  const slice = plain.slice(start, end);
-  const inner = buildSentenceOffsetSpans(slice);
-  const parts = inner
-    .map((s) => {
-      const text = slice.slice(s.start, s.end).replace(/\s+/g, " ").trim();
-      return { text, start: start + s.start, end: start + s.end };
-    })
-    .filter((p) => p.text.length > 0);
-  if (parts.length) return parts;
-  const text = slice.replace(/\s+/g, " ").trim();
-  return text ? [{ text, start, end }] : [];
-}
-
 /**
- * 听书朗读单元：默认按段落（比逐句合成少请求、句间更顺）。
- * `parts` 供句级高亮；播放进度由 Edge WordBoundary 驱动。
+ * 听书朗读单元：按句切开（一句一合成片段）。
+ * ponytail: 旧「按段合成 + 段内 seek 切句」会卡住/跳句；上下句改为换单元更稳。
+ * 超长句再按 MAX_LISTEN_UNIT_CHARS 切开；parts 仅含自身，供高亮。
  */
 export function chapterToSentences(html: string): ListenSentence[] {
   const plain = stripMarkdownForTts(htmlToPlainText(html));
   if (!plain) return [];
   const spans = expandSpansToMaxChars(
     plain,
-    buildParagraphOffsetSpans(plain),
+    buildSentenceOffsetSpans(plain),
     MAX_LISTEN_UNIT_CHARS,
   );
   return spans
     .map(({ start, end }) => {
       const text = plain.slice(start, end).replace(/\s+/g, " ").trim();
-      const parts = partsForUnitSpan(plain, start, end).filter(
-        (p) => !isDecorativeSeparatorText(p.text),
-      );
-      return { text, start, end, parts };
+      if (!text) return null;
+      return {
+        text,
+        start,
+        end,
+        parts: [{ text, start, end }],
+      };
     })
-    .filter((s) => s.text.length > 0 && !isDecorativeSeparatorText(s.text))
+    .filter(
+      (s): s is { text: string; start: number; end: number; parts: ListenTextSpan[] } =>
+        !!s && !isDecorativeSeparatorText(s.text),
+    )
     .map((s, index) => ({ ...s, index }));
+}
+
+/** 纯文本字符偏移 → 朗读单元下标（目录节起点 / 阅读进度共用） */
+export function sentenceIndexAtPlainOffset(list: ListenSentence[], offset: number): number {
+  if (!list.length) return 0;
+  const target = Math.max(0, offset);
+  for (let i = 0; i < list.length; i++) {
+    if (target < list[i]?.end) return i;
+  }
+  return list.length - 1;
+}
+
+/**
+ * 章内滚动比 → 句下标。按纯文本坐标映射，避免「比 × 句数」在长短段不均时偏到节标题前。
+ */
+export function sentenceIndexAtScrollPercent(
+  list: ListenSentence[],
+  scrollPercent: number,
+): number {
+  if (!list.length) return 0;
+  const p = Math.min(1, Math.max(0, scrollPercent));
+  if (p <= 0) return 0;
+  const plainEnd = list[list.length - 1]?.end;
+  if (p >= 1 || plainEnd <= 0) return list.length - 1;
+  return sentenceIndexAtPlainOffset(list, p * plainEnd);
 }
 
 /** 听书句级高亮：成对去掉 data-listen-hl 包裹（用 span，mp-html 信任标签） */

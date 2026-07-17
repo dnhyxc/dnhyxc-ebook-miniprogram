@@ -24,7 +24,7 @@
         </view>
       </view>
 
-      <!-- 倍速 | 上段 | 播放 | 下段 | 听书页 -->
+      <!-- 倍速 | 上一句 | 播放 | 下一句 | 听书页 -->
       <view class="listen-mini__actions">
         <view class="listen-mini__cell">
           <wd-button

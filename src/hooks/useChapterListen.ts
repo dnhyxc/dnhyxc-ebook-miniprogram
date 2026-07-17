@@ -6,7 +6,7 @@ import {
 } from "@/constants/edgeTts";
 import { ttsPlayer } from "@/services/tts-player";
 import type { ListenSentence, ListenTextSpan } from "@/utils/listen-text";
-import { chapterToSentences } from "@/utils/listen-text";
+import { chapterToSentences, sentenceIndexAtScrollPercent } from "@/utils/listen-text";
 
 export type ListenStatus = "idle" | "loading" | "playing" | "paused";
 
@@ -117,19 +117,9 @@ function applySentence(index: number) {
   }
 }
 
-/** 章内滚动进度 → 句下标（对齐听书跟随滚屏的近似映射） */
-function sentenceIndexFromScrollPercent(count: number, scrollPercent: number): number {
-  if (count <= 0) return 0;
-  if (count === 1) return 0;
-  const p = Math.min(1, Math.max(0, scrollPercent));
-  if (p <= 0) return 0;
-  if (p >= 1) return count - 1;
-  return Math.min(count - 1, Math.floor(p * count));
-}
-
 async function loadAndPlayChapter(
   index: number,
-  start: { fromSentence?: number; scrollPercent?: number } = {},
+  start: { fromSentence?: number; scrollPercent?: number; chapterTitle?: string } = {},
 ): Promise<void> {
   if (!getChapterFn || !bookId.value) return;
   const gen = sessionGen;
@@ -152,10 +142,11 @@ async function loadAndPlayChapter(
   const startIdx =
     start.fromSentence != null
       ? Math.min(Math.max(0, start.fromSentence), list.length - 1)
-      : sentenceIndexFromScrollPercent(list.length, start.scrollPercent ?? 0);
+      : sentenceIndexAtScrollPercent(list, start.scrollPercent ?? 0);
 
   chapterIndex.value = index;
-  chapterTitle.value = chapter.title || `第 ${index + 1} 章`;
+  const titleOverride = (start.chapterTitle ?? "").trim();
+  chapterTitle.value = titleOverride || chapter.title || `第 ${index + 1} 章`;
   sentences.value = list;
   applySentence(startIdx);
 
@@ -205,10 +196,11 @@ async function loadAndPlayChapter(
   syncListenProgress();
   startProgressTimer();
 
-  await ttsPlayer.playFrom(startIdx);
-  if (gen !== sessionGen) return;
-  // 真正出声以 onPlay 为准；此处仅兜底，避免一直停在 loading
-  if (status.value === "loading") status.value = "playing";
+  // 不 await 合成：阅读页可立刻跟读滚屏，避免目录切章卡在章首等 TTS
+  void ttsPlayer.playFrom(startIdx).then(() => {
+    if (gen !== sessionGen) return;
+    if (status.value === "loading") status.value = "playing";
+  });
 }
 
 async function advanceChapter(): Promise<void> {
@@ -255,13 +247,23 @@ export async function startListen(opts: StartListenOptions): Promise<void> {
 }
 
 /** 听书中跳到指定章（如目录点击），默认从章首起播 */
-export async function seekListenChapter(index: number, fromSentence = 0): Promise<void> {
+export async function seekListenChapter(
+  index: number,
+  fromSentenceOrOpts:
+    number | { fromSentence?: number; scrollPercent?: number; chapterTitle?: string } = 0,
+): Promise<void> {
   if (status.value === "idle" || !getChapterFn) return;
   sessionGen += 1;
   ttsPlayer.stop();
+  // 切章也在点击栈里解锁，避免体验版异步 play 失败
+  ttsPlayer.unlockFromUserGesture();
   status.value = "loading";
   currentSentenceText.value = "准备朗读…";
-  await loadAndPlayChapter(index, { fromSentence });
+  const start =
+    typeof fromSentenceOrOpts === "number"
+      ? { fromSentence: fromSentenceOrOpts }
+      : fromSentenceOrOpts;
+  await loadAndPlayChapter(index, start);
 }
 
 export function pauseListen(): void {
@@ -301,10 +303,12 @@ export function nextListenSentence(): void {
   ttsPlayer.nextSentence();
 }
 
-/** 跳到章内指定句（进度条点选） */
-export function seekListenSentence(index: number): void {
+/** 跳到章内指定句（进度条点选 / 同 spine 目录切节） */
+export function seekListenSentence(index: number, opts?: { chapterTitle?: string }): void {
   if (status.value === "idle" || !sentences.value.length) return;
   const i = Math.max(0, Math.min(index, sentences.value.length - 1));
+  const title = (opts?.chapterTitle ?? "").trim();
+  if (title) chapterTitle.value = title;
   status.value = "playing";
   void ttsPlayer.playFrom(i);
   syncListenProgress();
@@ -336,6 +340,7 @@ export function formatListenClock(ms: number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+/** spine 级上下章（无目录时的回退）；听书页有 toc 时应按目录项切换 */
 export async function prevListenChapter(): Promise<void> {
   if (status.value === "idle" || !getChapterFn) return;
   if (chapterIndex.value <= 0) {
@@ -347,16 +352,12 @@ export async function prevListenChapter(): Promise<void> {
 
 export async function nextListenChapter(): Promise<void> {
   if (status.value === "idle" || !getChapterFn) return;
-  try {
-    const chapter = await getChapterFn(chapterIndex.value);
-    if (chapter.nextIndex == null) {
-      uni.showToast({ title: "已是最后一章", icon: "none" });
-      return;
-    }
-    await seekListenChapter(chapter.nextIndex, 0);
-  } catch {
-    uni.showToast({ title: "加载下一章失败", icon: "none" });
+  const total = chapterTotal.value;
+  if (total > 0 && chapterIndex.value >= total - 1) {
+    uni.showToast({ title: "已是最后一章", icon: "none" });
+    return;
   }
+  await seekListenChapter(chapterIndex.value + 1, 0);
 }
 
 export function setListenRate(next: number): void {

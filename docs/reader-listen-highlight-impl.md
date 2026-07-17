@@ -284,3 +284,8 @@ if (listenActive.value) applyListenSentenceHighlight();
 
 - `injectListenSentenceHighlight`：仅阅读页听书高亮路径
 - 块段渲染与跟读仍见 [reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md)
+
+### 6.4 后续相关变更（口径矫正）
+
+- **朗读单元**：已改为「一句一合成」（见 [reader-listen-sentence-unit-impl.md](./reader-listen-sentence-unit-impl.md)）；高亮仍按当前 `highlightSpan` 刷块段，与单元粒度一致。
+- **高亮不显示**：若听书时被目录 `tocSplit` 挡住分段 `mp-html`，见 [reader-ebook-toc-listen-impl.md](./reader-ebook-toc-listen-impl.md)（分段模板优先 + 起播清 tocSplit）。

@@ -74,7 +74,13 @@ export interface ChaptersResponse {
   title: string;
   total: number;
   totalWordCount?: number;
+  /** spine 线性章：阅读进度 / 字数加权用 */
   chapters: ChapterMeta[];
+  /**
+   * nav 展平目录（与 Web 一致）；缺省时 UI 回退 chapters。
+   * index 为 spine 下标，可多条共用同一 index（同文件多节）。
+   */
+  toc?: ChapterMeta[];
 }
 
 export interface ChapterContent {

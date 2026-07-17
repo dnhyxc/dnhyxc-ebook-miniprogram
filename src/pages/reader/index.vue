@@ -54,7 +54,7 @@
           >
             {{ block.title }}
           </view>
-          <!-- 听书当前章：块级原生 view 定位，避免往 mp-html 灌句锚 -->
+          <!-- 听书分段优先：tocSplit 会挡住 mp-html-章-段，导致句高亮失效 -->
           <template v-if="mpHtmlMounted && isListenSegmentedChapter(block.index)">
             <view
               v-for="(seg, si) in block.segments"
@@ -68,7 +68,7 @@
                 :container-style="containerStyle"
                 :tag-style="mpTagStyle"
                 :copy-link="false"
-                :lazy-load="true"
+                :lazy-load="false"
                 :domain="''"
                 :error-img="''"
                 :loading-img="''"
@@ -77,6 +77,39 @@
                 :use-anchor="false"
               />
             </view>
+          </template>
+          <!-- 目录跳转：标题前夹原生锚点（仅非听书章） -->
+          <template v-else-if="mpHtmlMounted && block.tocSplit">
+            <mp-html
+              v-if="block.tocSplit.before"
+              :id="`mp-html-${block.index}-before`"
+              :content="block.tocSplit.before"
+              :container-style="containerStyle"
+              :tag-style="mpTagStyle"
+              :copy-link="false"
+              :lazy-load="true"
+              :domain="''"
+              :error-img="''"
+              :loading-img="''"
+              :scroll-table="false"
+              :selectable="false"
+              :use-anchor="false"
+            />
+            <view :id="`ebook-toc-jump-${block.index}`" class="toc-jump-anchor" />
+            <mp-html
+              :id="`mp-html-${block.index}-after`"
+              :content="block.tocSplit.after || ''"
+              :container-style="containerStyle"
+              :tag-style="mpTagStyle"
+              :copy-link="false"
+              :lazy-load="true"
+              :domain="''"
+              :error-img="''"
+              :loading-img="''"
+              :scroll-table="false"
+              :selectable="false"
+              :use-anchor="false"
+            />
           </template>
           <mp-html
             v-else-if="mpHtmlMounted"
@@ -291,13 +324,13 @@
       ref="tocSheetRef"
       v-model:open="tocOpen"
       :chapters="toc"
-      :active-index="chapterIndex"
+      :active-toc-index="activeTocIndex"
       :dark="isDarkPaper"
       :background-color="readerStyle.backgroundColor"
       :color="readerStyle.color"
       :top="chromeInsets.top || 88"
       :bottom="bottomChromeInset"
-      @select="goChapter"
+      @select="onTocSelect"
       @closed="onTocClosed"
     />
   </view>
@@ -323,6 +356,12 @@ import {
   segmentIndexForChar,
   type ChapterHtmlSegment,
 } from "@/utils/listen-text";
+import {
+  findActiveTocListIndex,
+  splitHtmlAtTocTitle,
+  tocItemListenSentenceIndex,
+  tocItemScrollPercent,
+} from "@/utils/ebook-toc";
 import { stripReaderColorStyles } from "@/utils/reader-html";
 
 defineOptions({
@@ -336,6 +375,8 @@ interface ChapterBlock {
   href: string;
   /** 块级切段，听书跟读时用原生 view id 定位 */
   segments: ChapterHtmlSegment[];
+  /** 目录跳转时按标题拆段，中间夹原生锚点 */
+  tocSplit?: { before: string; after: string } | null;
 }
 
 const bookId = ref("");
@@ -347,7 +388,10 @@ const chapterTotal = ref(0);
 const chapterHref = ref("");
 const prevIndex = ref<number | null>(null);
 const nextIndex = ref<number | null>(null);
+/** 目录抽屉展示（nav 展平，可与 spine 一对多） */
 const toc = ref<ChapterMeta[]>([]);
+/** spine 线性章，进度字数加权用 */
+const spineChapters = ref<ChapterMeta[]>([]);
 const chapterBlocks = ref<ChapterBlock[]>([]);
 const hasContent = computed(() => chapterBlocks.value.length > 0);
 
@@ -449,9 +493,13 @@ const {
   highlightSpan: listenHighlightSpan,
   startListen,
   seekListenChapter,
+  seekListenSentence,
   stopListen,
   stopListenIfLeavingReader,
 } = useChapterListen();
+
+/** 目录听书跳转中：仅挡住跟读滚屏 watch，不高亮 */
+let listenScrollQuiet = false;
 
 const { accentBtnStyle } = useThemeAccent();
 
@@ -517,13 +565,12 @@ function onReaderContentTouchStart() {
 
 watch(listenActive, (active) => {
   if (active) {
+    // 目录 tocSplit 会挡住听书分段 mp-html，起播前清掉
+    for (const b of chapterBlocks.value) {
+      if (b.tocSplit) b.tocSplit = null;
+    }
     listenAutoFollow.value = true;
     syncListenFollowAnchor();
-    if (readerPageVisible.value) {
-      void nextTick(() => {
-        applyListenSentenceHighlight();
-      });
-    }
   } else {
     clearListenAnchorTimer();
     clearListenSentenceHighlight();
@@ -548,6 +595,16 @@ watch(
 
 /** 当前章内阅读进度，听书起播用 */
 const readingScrollPercent = ref(0);
+
+/** 目录高亮用列表下标（同 spine 多节时不能直接比 chapterIndex） */
+const activeTocIndex = computed(() => {
+  const spine = chapterIndex.value;
+  const block = chapterBlocks.value.find((b) => b.index === spine);
+  return findActiveTocListIndex(toc.value, spine, {
+    chapterHtml: block?.html,
+    scrollPercent: readingScrollPercent.value,
+  });
+});
 
 let lastChromeBottom = 0;
 const TOOLBAR_INSET_FALLBACK = 72;
@@ -597,6 +654,7 @@ async function applyScrollTop(target: number, forceBump = false) {
 function isListenSegmentedChapter(chapterIdx: number): boolean {
   return (
     listenActive.value &&
+    listenSentenceCount.value > 0 &&
     listenChapterIndex.value === chapterIdx &&
     (chapterBlocks.value.find((b) => b.index === chapterIdx)?.segments.length ?? 0) > 0
   );
@@ -723,6 +781,11 @@ function scrollToListenSegment(
               const scrollTopY = scroll.top ?? 0;
               const scrollH = scroll.height ?? 0;
               const segH = block.height ?? 0;
+              // 拆段后 mp-html 尚未撑开时量到的高度不可用，交给章级回退
+              if (segH < 20) {
+                resolve(false);
+                return;
+              }
               const highlightY = (block.top ?? 0) + frac * segH;
               // 估一行高，保证整句落在舒适区内而非贴边
               const lineH = Math.min(48, Math.max(20, Math.floor(scrollH * 0.04)));
@@ -781,8 +844,7 @@ async function scrollToListenSentence(force = false) {
     await ensureChapterLoaded(chap);
     if (gen !== listenScrollGen) return;
     await nextTick();
-    // 强制回位/切章后等一帧量高度；句级跟读段已挂好，不再空等
-    if (force) await new Promise((r) => setTimeout(r, 80));
+    if (force) await new Promise((r) => setTimeout(r, 48));
     if (gen !== listenScrollGen) return;
     if (!force && !listenAutoFollow.value) return;
 
@@ -822,14 +884,26 @@ async function onListenTap() {
     return;
   }
   bottomPanel.value = null;
+  chromeVisible.value = true;
+  listenAutoFollow.value = true;
+  for (const b of chapterBlocks.value) {
+    if (b.tocSplit) b.tocSplit = null;
+  }
+  const spine = chapterIndex.value;
+  const readingPct = readingScrollPercent.value;
   try {
+    suppressListenBreak(2000);
+    markListenProgrammatic(2000);
+    // 合成前先按阅读位滚进焦点带（整章布局，立刻进展示区）
+    await scrollToChapter(spine, readingPct, "listen");
+
     await startListen({
       bookId: bookId.value,
       bookTitle: bookTitle.value,
       coverUrl: bookCoverUrl.value,
-      chapterIndex: chapterIndex.value,
+      chapterIndex: spine,
       chapterTotal: chapterTotal.value,
-      scrollPercent: readingScrollPercent.value,
+      scrollPercent: readingPct,
       getChapter: async (index) => {
         const block = await fetchChapterBlock(index);
         return {
@@ -839,10 +913,23 @@ async function onListenTap() {
         };
       },
     });
-    void nextTick(() => {
-      setTimeout(measureChromeInsets, 80);
-      void scrollToListenSentence(true);
-    });
+
+    // 拆段 remount 后立刻用章级定位钉回（不等 mp-html 实例）
+    const chap = listenChapterIndex.value;
+    const sent = listenSentenceIndex.value;
+    await nextTick();
+    await scrollToChapter(chap, listenSentenceScrollPercent(sent), "listen");
+    applyListenSentenceHighlight();
+
+    // 高亮精修异步，不挡首屏
+    void (async () => {
+      const meta = listenHighlightSpan.value ?? listenSentences.value[sent];
+      await waitListenSegReady(chap, typeof meta?.start === "number" ? meta.start : 0, 500);
+      applyListenSentenceHighlight();
+      await scrollToListenSentence(true);
+    })();
+
+    void nextTick(() => setTimeout(measureChromeInsets, 80));
   } catch (err) {
     uni.showToast({
       title: err instanceof Error ? err.message : "听书启动失败",
@@ -1375,13 +1462,68 @@ function lastLoadedIndex(): number | null {
   return chapterBlocks.value[chapterBlocks.value.length - 1]?.index ?? null;
 }
 
+/** 目录点选的节标题：同 spine 多节时覆盖文件级 title */
+let tocStickyTitle: string | null = null;
+let tocStickySpine = -1;
+
 function setActiveChapterMeta(index: number) {
+  if (index !== tocStickySpine) {
+    tocStickyTitle = null;
+    tocStickySpine = -1;
+  }
   chapterIndex.value = index;
   const block = chapterBlocks.value.find((b) => b.index === index);
-  chapterTitle.value = block?.title ?? toc.value[index]?.title ?? "";
-  chapterHref.value = block?.href ?? toc.value[index]?.href ?? "";
+  chapterTitle.value =
+    (tocStickyTitle && index === tocStickySpine ? tocStickyTitle : null) ||
+    block?.title ||
+    spineChapters.value[index]?.title ||
+    toc.value.find((t) => t.index === index)?.title ||
+    "";
+  chapterHref.value = block?.href ?? spineChapters.value[index]?.href ?? "";
   prevIndex.value = index > 0 ? index - 1 : null;
   nextIndex.value = index < chapterTotal.value - 1 ? index + 1 : null;
+}
+
+/** 原生目录锚点顶齐视口（不进 mp-html 节点树） */
+function scrollToNativeTocAnchor(chapterIdx: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    createQuery()
+      .select(`#ebook-toc-jump-${chapterIdx}`)
+      .boundingClientRect((anchorRect) => {
+        createQuery()
+          .select(".reader-scroll")
+          .fields({ rect: true, size: true, scrollOffset: true }, (scrollData) => {
+            void (async () => {
+              const anchor = anchorRect && !Array.isArray(anchorRect) ? anchorRect : null;
+              const scroll = scrollData && !Array.isArray(scrollData) ? scrollData : null;
+              const offsetTop = scroll?.scrollTop;
+              if (!anchor || !scroll || typeof offsetTop !== "number") {
+                resolve(false);
+                return;
+              }
+              const target = Math.max(
+                0,
+                Math.floor((anchor.top ?? 0) - (scroll.top ?? 0) + offsetTop),
+              );
+              markListenProgrammatic(800);
+              await applyScrollTop(target, true);
+              syncListenFollowAnchor(target);
+              currentScrollTop.value = target;
+              lastScrollTopForChrome = target;
+              resolve(true);
+            })();
+          })
+          .exec();
+      })
+      .exec();
+  });
+}
+
+async function alignTocJump(chapterIdx: number, scrollPercent: number): Promise<void> {
+  await nextTick();
+  await new Promise((r) => setTimeout(r, 64));
+  const ok = await scrollToNativeTocAnchor(chapterIdx);
+  if (!ok) await scrollToChapter(chapterIdx, scrollPercent, "toc");
 }
 
 async function fetchChapterBlock(index: number, forceRefresh = false): Promise<ChapterBlock> {
@@ -1408,8 +1550,9 @@ async function fetchChapterBlock(index: number, forceRefresh = false): Promise<C
     index: data.index,
     title: data.title || "",
     html,
-    href: toc.value[index]?.href ?? "",
+    href: spineChapters.value[index]?.href ?? "",
     segments: buildChapterHtmlSegments(html),
+    tocSplit: null,
   };
 }
 
@@ -1426,10 +1569,11 @@ async function ensureChapterLoaded(index: number, forceRefresh = false): Promise
 async function scrollToChapter(
   index: number,
   scrollPercent = 0,
-  mode: "progress" | "listen" = "progress",
+  mode: "progress" | "listen" | "toc" = "progress",
 ) {
   await nextTick();
-  await new Promise((r) => setTimeout(r, mode === "listen" ? 40 : 120));
+  // listen 尽量短等：起播/目录要立刻进展示区
+  await new Promise((r) => setTimeout(r, mode === "listen" ? 16 : mode === "toc" ? 100 : 120));
 
   return new Promise<void>((resolve) => {
     createQuery()
@@ -1457,11 +1601,17 @@ async function scrollToChapter(
                 // 把当前句估算位置放到视口约 28% 处，保证落在展示区内
                 const sentenceY = blockTop + p * blockHeight;
                 target = Math.max(0, Math.floor(sentenceY - vp * 0.28));
+              } else if (mode === "toc") {
+                // 目录跳转：把目标节位置贴到视口顶（进度恢复公式不会顶齐）
+                target = Math.max(0, Math.floor(blockTop + p * blockHeight));
               } else if (p > 0 && blockHeight > vp) {
                 target += Math.floor((blockHeight - vp) * p);
               }
 
-              await applyScrollTop(target);
+              // toc/listen 强制 bump：同值 scroll-top 在微信里不生效，起播必现
+              if (mode === "toc" || mode === "listen") markListenProgrammatic(800);
+              await applyScrollTop(target, mode === "toc" || mode === "listen");
+              if (mode === "toc" || mode === "listen") syncListenFollowAnchor(target);
               setActiveChapterMeta(index);
               resolve();
             })();
@@ -1484,6 +1634,7 @@ watch(
       readerPageVisible.value,
     ] as const,
   ([active, follow, , , , total, visible]) => {
+    if (listenScrollQuiet) return;
     if (!active || !follow || !visible || total <= 0) return;
     void scrollToListenSentence(false);
   },
@@ -1496,7 +1647,7 @@ async function openAtChapter(index: number, scrollPercent = 0, forceRefresh = fa
 
   // 先挂当前章并定位，邻章错峰加载，避免连续几次 MB 级 setData
   await ensureChapterLoaded(index, forceRefresh);
-  await scrollToChapter(index, scrollPercent);
+  await scrollToChapter(index, scrollPercent, "progress");
   persistProgress(scrollPercent);
   await nextTick();
   measureViewport();
@@ -1511,6 +1662,129 @@ async function openAtChapter(index: number, scrollPercent = 0, forceRefresh = fa
 
   // 短章不足一屏时继续预加载，凑够可滚动高度
   void fillStreamIfShort();
+}
+
+/**
+ * 目录跳转（纯阅读）：按标题拆 HTML，夹原生锚点顶齐一次。
+ * 听书切节走 jumpListenToTocItem，避免 tocSplit↔分段反复 remount 造成多次从头滚。
+ */
+async function openAtChapterFromToc(item: ChapterMeta, forceRefresh = false) {
+  const index = item.index;
+  if (index < 0 || index >= chapterTotal.value) return;
+
+  chapterBlocks.value = [];
+  tocOpen.value = false;
+  tocStickyTitle = (item.title || "").trim() || null;
+  tocStickySpine = index;
+  setActiveChapterMeta(index);
+
+  await ensureChapterLoaded(index, forceRefresh);
+  const block = chapterBlocks.value.find((b) => b.index === index);
+  if (!block) return;
+
+  const scrollPercent = tocItemScrollPercent(block.html, item);
+  block.tocSplit = splitHtmlAtTocTitle(block.html, item);
+
+  const neighbors: Promise<void>[] = [];
+  if (index + 1 < chapterTotal.value) neighbors.push(ensureChapterLoaded(index + 1, forceRefresh));
+  if (index > 0) neighbors.push(ensureChapterLoaded(index - 1, forceRefresh));
+  if (neighbors.length) await Promise.all(neighbors);
+
+  await alignTocJump(index, scrollPercent);
+  persistProgress(scrollPercent);
+  await nextTick();
+  measureViewport();
+  void fillStreamIfShort();
+}
+
+/** 等听书分段 mp-html 就绪（替代固定长 sleep） */
+async function waitListenSegReady(chap: number, charOffset: number, maxMs = 600) {
+  const block = chapterBlocks.value.find((b) => b.index === chap);
+  if (!block?.segments.length) return;
+  const si = segmentIndexForChar(block.segments, charOffset);
+  const t0 = Date.now();
+  while (Date.now() - t0 < maxMs) {
+    if (getMpHtmlById(`mp-html-${chap}-${si}`)?.setContent) return;
+    await new Promise((r) => setTimeout(r, 24));
+  }
+}
+
+/**
+ * 听书中点目录：先滚到节位置（立刻进展示区），再 seek 合成；高亮精修异步。
+ * ponytail: 绝不能先 await TTS / waitListenSegReady 再滚，否则会长时间停在章首。
+ */
+async function jumpListenToTocItem(item: ChapterMeta) {
+  const index = item.index;
+  if (index < 0 || index >= chapterTotal.value) return;
+
+  const title = (item.title || "").trim();
+  listenAutoFollow.value = true;
+  suppressListenBreak(2400);
+  markListenProgrammatic(2400);
+  listenScrollQuiet = true;
+  tocOpen.value = false;
+  tocStickyTitle = title || null;
+  tocStickySpine = index;
+  setActiveChapterMeta(index);
+
+  try {
+    const sameSpine = listenChapterIndex.value === index && hasChapterBlock(index);
+    if (!sameSpine) {
+      chapterBlocks.value = [];
+      await ensureChapterLoaded(index);
+      await nextTick();
+    }
+    const block = chapterBlocks.value.find((b) => b.index === index);
+    if (!block) return;
+    if (block.tocSplit) block.tocSplit = null;
+
+    const scrollPercent = tocItemScrollPercent(block.html, item);
+    const fromSentence = tocItemListenSentenceIndex(block.html, item);
+    persistProgress(scrollPercent);
+
+    // 1) 立刻章级滚到目录位（此时多半仍是整章 mp-html，不依赖分段）
+    await scrollToChapter(index, scrollPercent, "listen");
+
+    // 2) 再切播放（跨章 await 合成；画面已在目标附近）
+    if (sameSpine) {
+      seekListenSentence(fromSentence, { chapterTitle: title || undefined });
+    } else {
+      await seekListenChapter(index, {
+        fromSentence,
+        chapterTitle: title || undefined,
+      });
+      // 拆段 remount 可能甩顶：合成返回后立刻再钉一次
+      await nextTick();
+      await scrollToChapter(
+        index,
+        listenSentenceScrollPercent(listenSentenceIndex.value),
+        "listen",
+      );
+    }
+
+    listenHlChap = -1;
+    listenHlSeg = -1;
+    applyListenSentenceHighlight();
+
+    // 3) 分段精修异步
+    void (async () => {
+      const meta = listenHighlightSpan.value ?? listenSentences.value[listenSentenceIndex.value];
+      await waitListenSegReady(index, typeof meta?.start === "number" ? meta.start : 0, 500);
+      applyListenSentenceHighlight();
+      await scrollToListenSentence(true);
+    })();
+
+    void (async () => {
+      const neighbors: Promise<void>[] = [];
+      if (index + 1 < chapterTotal.value) neighbors.push(ensureChapterLoaded(index + 1));
+      if (index > 0) neighbors.push(ensureChapterLoaded(index - 1));
+      if (neighbors.length) await Promise.all(neighbors);
+      void fillStreamIfShort();
+    })();
+  } finally {
+    listenScrollQuiet = false;
+    syncListenFollowAnchor();
+  }
 }
 
 async function fillStreamIfShort() {
@@ -1599,7 +1873,9 @@ async function initReader(forceRefresh = false) {
     parsePollCount = 0;
     bookTitle.value = book.title;
     bookCoverUrl.value = resolveUploadFileUrl(book.coverUrl) || "";
-    toc.value = chaptersRes.chapters;
+    spineChapters.value = chaptersRes.chapters ?? [];
+    // 有 nav toc 则与 Web 一致展示每一节；否则回退 spine
+    toc.value = chaptersRes.toc?.length ? chaptersRes.toc : (chaptersRes.chapters ?? []);
     chapterTotal.value = chaptersRes.total;
 
     const startIndex = resolveStartChapterIndex(
@@ -1635,14 +1911,20 @@ async function initReader(forceRefresh = false) {
   }
 }
 
-function goChapter(index: number) {
+/** 点目录项：阅读顶齐；听书走单次跟读跳转 */
+function onTocSelect(item: ChapterMeta) {
+  const index = item.index;
   if (index < 0 || index >= chapterTotal.value) return;
-  const resumeListenAtChapter = listenActive.value;
   void (async () => {
-    await openAtChapter(index, 0);
-    if (resumeListenAtChapter) {
-      await seekListenChapter(index, 0);
+    try {
+      if (listenActive.value) {
+        await jumpListenToTocItem(item);
+      } else {
+        await openAtChapterFromToc(item);
+      }
       void nextTick(() => setTimeout(measureChromeInsets, 80));
+    } catch {
+      uni.showToast({ title: "跳转失败", icon: "none" });
     }
   })();
 }
@@ -1769,7 +2051,7 @@ function persistProgress(scrollPercent: number) {
     chapterIndex: chapterIndex.value,
     chapterHref: chapterHref.value,
     scrollPercent,
-    percent: calculatePercent(chapterIndex.value, scrollPercent, toc.value),
+    percent: calculatePercent(chapterIndex.value, scrollPercent, spineChapters.value),
   });
 }
 </script>
@@ -1834,6 +2116,13 @@ function persistProgress(scrollPercent: number) {
 
 .chapter-block :deep(._root) {
   color: inherit;
+}
+
+.toc-jump-anchor {
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 .chapter-heading {

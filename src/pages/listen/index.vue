@@ -96,7 +96,7 @@
                 <text class="listen-nav__label">原文</text>
               </view>
 
-              <view class="listen-chap" @click="prevListenChapter">
+              <view class="listen-chap" @click="onPrevChapter">
                 <AppIcon name="fast-backward" :size="32" :color="iconColor" />
               </view>
 
@@ -122,7 +122,7 @@
                 </view>
               </view>
 
-              <view class="listen-chap" @click="nextListenChapter">
+              <view class="listen-chap" @click="onNextChapter">
                 <AppIcon name="fast-forward" :size="32" :color="iconColor" />
               </view>
 
@@ -205,7 +205,7 @@
     <ChapterTocSheet
       v-model:open="tocOpen"
       :chapters="tocChapters"
-      :active-index="chapterIndex"
+      :active-toc-index="activeTocIndex"
       :dark="isDarkPaper"
       :background-color="paper.bg"
       :color="paper.fg"
@@ -228,8 +228,9 @@ import { EDGE_TTS_LISTEN_VOICES, getEdgeTtsVoiceNameZh } from "@/constants/edgeT
 import { useChapterListen } from "@/hooks/useChapterListen";
 import { useReaderSettings } from "@/hooks/useReaderSettings";
 import { useThemeAccent } from "@/hooks/useTheme";
-import { fetchChapters } from "@/services/ebook";
+import { fetchChapter, fetchChapters } from "@/services/ebook";
 import type { ChapterMeta } from "@/types/ebook";
+import { findActiveTocListIndex, tocItemListenSentenceIndex } from "@/utils/ebook-toc";
 
 defineOptions({
   components: { AppIcon, ListenSkip15Icon },
@@ -270,6 +271,12 @@ const rateDrawerOpen = ref(false);
 const tocOpen = ref(false);
 const tocChapters = ref<ChapterMeta[]>([]);
 const tocLoading = ref(false);
+
+const activeTocIndex = computed(() =>
+  findActiveTocListIndex(tocChapters.value, chapterIndex.value, {
+    scrollPercent: timeProgressRatio.value,
+  }),
+);
 const edgeVoices = EDGE_TTS_LISTEN_VOICES;
 /** 操作区短标签：音色名 */
 const shortVoiceLabel = computed(() => getEdgeTtsVoiceNameZh(voice.value));
@@ -596,6 +603,22 @@ function goOriginal() {
   uni.navigateBack();
 }
 
+async function ensureTocLoaded(): Promise<ChapterMeta[]> {
+  if (tocChapters.value.length) return tocChapters.value;
+  if (!bookId.value) return [];
+  if (tocLoading.value) return tocChapters.value;
+  tocLoading.value = true;
+  try {
+    const res = await fetchChapters(bookId.value);
+    tocChapters.value = res.toc?.length ? res.toc : (res.chapters ?? []);
+  } catch {
+    // 回退 spine 切章
+  } finally {
+    tocLoading.value = false;
+  }
+  return tocChapters.value;
+}
+
 async function openToc() {
   voiceDrawerOpen.value = false;
   rateDrawerOpen.value = false;
@@ -604,17 +627,10 @@ async function openToc() {
     return;
   }
   if (!tocChapters.value.length) {
-    if (tocLoading.value) return;
-    tocLoading.value = true;
+    uni.showLoading({ title: "加载目录", mask: true });
     try {
-      uni.showLoading({ title: "加载目录", mask: true });
-      const res = await fetchChapters(bookId.value);
-      tocChapters.value = res.chapters ?? [];
-    } catch {
-      uni.showToast({ title: "目录加载失败", icon: "none" });
-      return;
+      await ensureTocLoaded();
     } finally {
-      tocLoading.value = false;
       uni.hideLoading();
     }
   }
@@ -625,8 +641,83 @@ async function openToc() {
   tocOpen.value = true;
 }
 
-function onTocSelect(index: number) {
-  void seekListenChapter(index, 0);
+/** 当前播放对应的目录下标（同 spine 多节时优先标题，再按进度） */
+async function resolvePlayingTocIndex(toc: ChapterMeta[]): Promise<number> {
+  const spine = chapterIndex.value;
+  const title = (chapterTitle.value || "").trim();
+  if (title) {
+    const exact = toc.findIndex((t) => t.index === spine && (t.title || "").trim() === title);
+    if (exact >= 0) return exact;
+  }
+  let chapterHtml = "";
+  try {
+    if (bookId.value) {
+      const data = await fetchChapter(bookId.value, spine);
+      chapterHtml = data.html || "";
+    }
+  } catch {
+    // ignore
+  }
+  return findActiveTocListIndex(toc, spine, {
+    chapterHtml,
+    scrollPercent: timeProgressRatio.value,
+  });
+}
+
+async function seekToTocItem(item: ChapterMeta) {
+  let fromSentence = 0;
+  try {
+    if (bookId.value) {
+      const data = await fetchChapter(bookId.value, item.index);
+      fromSentence = tocItemListenSentenceIndex(data.html || "", item);
+    }
+  } catch {
+    // 无正文时仍切章
+  }
+  await seekListenChapter(item.index, {
+    fromSentence,
+    chapterTitle: (item.title || "").trim() || undefined,
+  });
+}
+
+function onTocSelect(item: ChapterMeta) {
+  void seekToTocItem(item);
+}
+
+/** 按目录上一项/下一项切章（同文件多节不能用 spine±1） */
+async function jumpChapterByToc(delta: -1 | 1) {
+  const toc = await ensureTocLoaded();
+  if (!toc.length) {
+    if (delta < 0) await prevListenChapter();
+    else await nextListenChapter();
+    return;
+  }
+  const active = await resolvePlayingTocIndex(toc);
+  if (active < 0) {
+    if (delta < 0) await prevListenChapter();
+    else await nextListenChapter();
+    return;
+  }
+  const target = active + delta;
+  if (target < 0) {
+    uni.showToast({ title: "已是第一章", icon: "none" });
+    return;
+  }
+  if (target >= toc.length) {
+    uni.showToast({ title: "已是最后一章", icon: "none" });
+    return;
+  }
+  const item = toc[target];
+  if (!item) return;
+  await seekToTocItem(item);
+}
+
+function onPrevChapter() {
+  void jumpChapterByToc(-1);
+}
+
+function onNextChapter() {
+  void jumpChapterByToc(1);
 }
 </script>
 

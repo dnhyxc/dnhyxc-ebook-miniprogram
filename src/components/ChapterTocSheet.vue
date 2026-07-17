@@ -24,16 +24,16 @@
         :show-scrollbar="false"
       >
         <view
-          v-for="item in chapters"
-          :key="item.index"
+          v-for="(item, tocIdx) in chapters"
+          :key="`${item.index}-${item.href}-${tocIdx}`"
           class="toc-item"
-          :class="{ 'toc-item--active': item.index === activeIndex }"
+          :class="{ 'toc-item--active': tocIdx === activeTocIndex }"
           :style="itemStyle(item)"
-          @click="onSelect(item.index)"
+          @click="onSelect(item)"
         >
           <text
             class="toc-item__text"
-            :style="item.index === activeIndex ? activeTextStyle : undefined"
+            :style="tocIdx === activeTocIndex ? activeTextStyle : undefined"
           >
             {{ item.title || `第 ${item.index + 1} 章` }}
           </text>
@@ -64,7 +64,8 @@ const props = withDefaults(
   defineProps<{
     open: boolean;
     chapters: ChapterMeta[];
-    activeIndex: number;
+    /** 目录列表下标（同 spine 多节时不能用 spine index） */
+    activeTocIndex: number;
     dark?: boolean;
     backgroundColor: string;
     color: string;
@@ -81,12 +82,13 @@ const props = withDefaults(
     top: 88,
     bottom: 0,
     contentSafeBottom: 0,
+    activeTocIndex: -1,
   },
 );
 
 const emit = defineEmits<{
   "update:open": [open: boolean];
-  select: [index: number];
+  select: [item: ChapterMeta];
   closed: [];
 }>();
 
@@ -195,8 +197,8 @@ function requestClose() {
   emit("update:open", false);
 }
 
-function onSelect(index: number) {
-  emit("select", index);
+function onSelect(item: ChapterMeta) {
+  emit("select", item);
   requestClose();
 }
 

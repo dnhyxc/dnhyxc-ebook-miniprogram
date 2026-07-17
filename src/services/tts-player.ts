@@ -115,8 +115,10 @@ type ApplyOpts = {
   play?: boolean;
 };
 
-/** 预取段数：当前段播放期间把后面几段合成+落盘，压低段间静音 */
-const PREFETCH_AHEAD = 2;
+/** 预取段数：起播只打当前句 timed；成功后再预取 1 段，避免一上来连打 3 次 */
+const PREFETCH_AHEAD = 1;
+/** 当前句开播后再预取，错开首包 */
+const PREFETCH_DELAY_MS = 320;
 /** BGM onTimeUpdate 不可靠；用 tick + boundary 表驱动高亮 */
 const HIGHLIGHT_TICK_MS = 200;
 
@@ -165,11 +167,29 @@ class TtsPlayer {
   private clipOriginMs = 0;
   /** 串行化 ±/拖拽 seek，避免连点打断合成后误报失败 */
   private seekQueue: Promise<void> = Promise.resolve();
+  private prefetchTimer: ReturnType<typeof setTimeout> | null = null;
 
   private clearPlayWatchdog(): void {
     if (this.playWatchdogTimer == null) return;
     clearTimeout(this.playWatchdogTimer);
     this.playWatchdogTimer = null;
+  }
+
+  private clearPrefetchTimer(): void {
+    if (this.prefetchTimer == null) return;
+    clearTimeout(this.prefetchTimer);
+    this.prefetchTimer = null;
+  }
+
+  /** 当前句合成成功后再预取，避免起播瞬间并行打满 timed */
+  private schedulePrefetch(fromIndex: number): void {
+    this.clearPrefetchTimer();
+    const gen = this.playGen;
+    this.prefetchTimer = setTimeout(() => {
+      this.prefetchTimer = null;
+      if (gen !== this.playGen) return;
+      this.prefetchAhead(fromIndex);
+    }, PREFETCH_DELAY_MS);
   }
 
   private stopHighlightTick(): void {
@@ -491,6 +511,7 @@ class TtsPlayer {
     this.abortAllSpeech();
     this.expectingPlayback = false;
     this.clearPlayWatchdog();
+    this.clearPrefetchTimer();
     this.stopHighlightTick();
     this.activeBoundaries = [];
     this.lastHighlightKey = "";
@@ -513,18 +534,22 @@ class TtsPlayer {
     this.bgm = null;
   }
 
+  /** 上一句：换合成单元（一句一片），不再段内 seek */
   prevSentence(): void {
     if (this.sentenceIndex <= 0) return;
     this.sentenceIndex -= 1;
+    this.pendingStartMs = 0;
     void this.playCurrent();
   }
 
+  /** 下一句：换合成单元（一句一片） */
   nextSentence(): void {
     if (this.sentenceIndex >= this.sentences.length - 1) {
       this.onChapterEnd?.();
       return;
     }
     this.sentenceIndex += 1;
+    this.pendingStartMs = 0;
     void this.playCurrent();
   }
 
@@ -579,6 +604,9 @@ class TtsPlayer {
     }
   }
 
+  /** 最近一次合成失败原因（供 UI toast，避免预取 throw 成 MiniProgramError） */
+  private lastSynthError = "";
+
   private startSpeech(text: string): Promise<SpeechPayload | null> {
     const key = this.cacheKey(text);
     const cached = this.speechCache.get(key);
@@ -590,7 +618,10 @@ class TtsPlayer {
     const req = synthesizeEdgeSpeechTimed(text, { voice: this.voice, speed: this.rate });
     const promise = req.promise
       .then((result) => {
-        if (!result.audio?.byteLength) return null;
+        if (!result.audio?.byteLength) {
+          this.lastSynthError = "语音合成失败：无音频";
+          return null;
+        }
         const payload: SpeechPayload = {
           audio: result.audio,
           boundaries: result.boundaries ?? [],
@@ -598,7 +629,12 @@ class TtsPlayer {
         this.speechCache.set(key, payload);
         return payload;
       })
-      .catch(() => null)
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : "语音合成失败";
+        // 取消不覆盖真实错误，也不向上抛
+        if (!/取消/.test(msg)) this.lastSynthError = msg;
+        return null;
+      })
       .finally(() => {
         const cur = this.jobs.get(key);
         if (cur?.promise === promise) this.jobs.delete(key);
@@ -612,7 +648,7 @@ class TtsPlayer {
     for (let i = 1; i <= PREFETCH_AHEAD; i += 1) {
       const s = this.sentences[fromIndex + i];
       if (!s?.text) continue;
-      void this.prepareFile(s.text, gen);
+      void this.prepareFile(s.text, gen).catch(() => undefined);
     }
   }
 
@@ -636,8 +672,8 @@ class TtsPlayer {
     if (gen !== this.playGen) return null;
     const again = await this.startSpeech(text);
     if (gen !== this.playGen) return null;
-    if (!again?.audio.byteLength) throw new Error("语音合成失败");
-    return again;
+    // ponytail: 失败返回 null，由 playCurrent 弹 lastSynthError；预取路径不再 throw
+    return again?.audio.byteLength ? again : null;
   }
 
   private removeTemp(path: string): void {
@@ -693,16 +729,22 @@ class TtsPlayer {
 
     const keep = this.keepKeysFrom(this.sentenceIndex);
     this.abortSpeechExcept(keep);
-    this.prefetchAhead(this.sentenceIndex);
+    this.clearPrefetchTimer();
 
     const bgm = this.ensureBgm();
     this.expectingPlayback = false;
     this.clearPlayWatchdog();
 
     try {
+      this.lastSynthError = "";
+      // 先只合成当前句；预取延后，避免起播连打 3 次 timed
       const prepared = await this.prepareFile(sentence.text, gen);
       if (gen !== this.playGen) return;
-      if (!prepared) return;
+      if (!prepared) {
+        const msg = this.lastSynthError || "语音合成失败";
+        if (!/取消/.test(msg)) this.onError?.(msg);
+        return;
+      }
 
       this.activeBoundaries = prepared.boundaries;
       this.rememberDuration(this.sentenceIndex, prepared.boundaries);
@@ -726,14 +768,14 @@ class TtsPlayer {
       }
 
       if (gen === this.playGen) {
-        this.prefetchAhead(this.sentenceIndex);
+        this.schedulePrefetch(this.sentenceIndex);
       }
     } catch (err) {
       if (gen !== this.playGen) return;
       const msg = err instanceof Error ? err.message : "";
       // 被更新的 seek/切段取消时不弹失败
       if (/取消/.test(msg)) return;
-      this.onError?.("语音合成失败");
+      this.onError?.(msg || this.lastSynthError || "语音合成失败");
     }
   }
 }

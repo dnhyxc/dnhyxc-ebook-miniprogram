@@ -33,15 +33,25 @@
       "title": "第一章",
       "level": 0
     }
+  ],
+  "toc": [
+    {
+      "index": 0,
+      "href": "OEBPS/chapter1.xhtml#section-2",
+      "title": "第二节",
+      "level": 1
+    }
   ]
 }
 ```
 
-| 字段    | 说明                                                 |
-| ------- | ---------------------------------------------------- |
-| `index` | 0-based，与 `GET .../chapter/:index` 一致            |
-| `href`  | EPUB 内原始路径，用于进度恢复与 Web CFI 映射（二期） |
-| `level` | 目录层级，0=章，1=节                                 |
+| 字段       | 说明                                                                       |
+| ---------- | -------------------------------------------------------------------------- |
+| `chapters` | spine 线性章（阅读/进度）；`total` 与此长度一致                            |
+| `toc`      | nav 展平目录（与 Web 一致）；可多条共用同一 `index`；缺省则 UI 用 chapters |
+| `index`    | 0-based spine 下标，与 `GET .../chapter/:index` 一致                       |
+| `href`     | EPUB 路径，toc 项可带 `#fragment`                                          |
+| `level`    | 目录层级，0=章，1=节                                                       |
 
 ---
 

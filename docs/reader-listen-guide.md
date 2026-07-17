@@ -5,7 +5,7 @@
 > **关联文件**：见 §0.4。  
 > **文档目标**：读懂整套听书如何串起来；按 §5 可在其他 uni-app / 微信小程序项目复刻等价逻辑。  
 > **非目标**：不写 EPUB 解析/书架/主题换肤本体；不写 Web 端听书；不做词级卡拉 OK。  
-> **改动追溯**：[reader-listen-hybrid-impl.md](./reader-listen-hybrid-impl.md)、[reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md)、[reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)
+> **改动追溯**：[reader-listen-hybrid-impl.md](./reader-listen-hybrid-impl.md)、[reader-listen-follow-scroll-impl.md](./reader-listen-follow-scroll-impl.md)、[reader-listen-highlight-impl.md](./reader-listen-highlight-impl.md)、[reader-ebook-toc-listen-impl.md](./reader-ebook-toc-listen-impl.md)、[reader-listen-sentence-unit-impl.md](./reader-listen-sentence-unit-impl.md)、[reader-listen-tts-prefetch-impl.md](./reader-listen-tts-prefetch-impl.md)、[reader-listen-scroll-before-tts-impl.md](./reader-listen-scroll-before-tts-impl.md)、[reader-listen-page-toc-chapter-nav-impl.md](./reader-listen-page-toc-chapter-nav-impl.md)
 
 ---
 
