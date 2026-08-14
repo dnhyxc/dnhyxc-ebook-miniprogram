@@ -28,6 +28,24 @@ function userDataPath(): string {
   return g.wx?.env?.USER_DATA_PATH ?? "";
 }
 
+/** 缓存键 → 稳定短文件名，同键覆盖写，避免拖进度堆出无数 tts-*.mp3 */
+function ttsFileNameForKey(key: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i += 1) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `tts-${(h >>> 0).toString(36)}.mp3`;
+}
+
+function isStorageFullError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /maximum size|storage limit|exceeded|文件存储|上限/i.test(msg);
+}
+
+/** 本地 mp3 最多留几份（当前+预取+余量）；超出先删最旧 */
+const MAX_TTS_FILES = 4;
+
 function clampRate(rate: number): number {
   // 听书刻度：0.5x–3.0x，步进 0.1
   const n = Math.round(rate * 10) / 10;
@@ -156,6 +174,10 @@ class TtsPlayer {
   /** 当前 bgm.src 对应的 playGen；用于忽略解锁静音 / 被取消音频的 onEnded */
   private srcGen = -1;
   private expectingPlayback = false;
+  /** 当前是否有可听输出（出声中）；预取 timed 不得据此把 UI 打成 loading */
+  private outputActive = false;
+  /** playCurrent 换源前主动 pause 时，勿把 UI 打成 paused */
+  private suppressPauseEvent = false;
   private playWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private highlightTimer: ReturnType<typeof setInterval> | null = null;
   private highlightStartedAt = 0;
@@ -347,6 +369,8 @@ class TtsPlayer {
     if (this.playedGen === gen) return;
     this.playedGen = gen;
     this.expectingPlayback = false;
+    this.outputActive = true;
+    this.suppressPauseEvent = false;
     this.clearPlayWatchdog();
     this.startHighlightTick(true);
     this.onPlay?.();
@@ -370,6 +394,7 @@ class TtsPlayer {
     if (!this.bgmBound) {
       bgm.onEnded(() => {
         this.stopHighlightTick();
+        this.outputActive = false;
         // 忽略解锁静音 / stop 后旧音频尾巴，避免切章时 playNext 跳过句首
         if (this.srcGen !== this.playGen || !this.lastTempPath) return;
         void this.playNext();
@@ -384,10 +409,14 @@ class TtsPlayer {
         this.expectingPlayback = false;
         this.clearPlayWatchdog();
         this.pauseHighlightTick();
+        // 等合成时主动 pause：整段等待期都吞掉 onPause（微信常异步回调）
+        if (this.suppressPauseEvent) return;
+        this.outputActive = false;
         this.onPause?.();
       });
       bgm.onStop(() => {
         this.expectingPlayback = false;
+        this.outputActive = false;
         this.clearPlayWatchdog();
         this.stopHighlightTick();
       });
@@ -498,9 +527,14 @@ class TtsPlayer {
     return { positionMs, durationMs };
   }
 
+  /** 当前是否仍有可听输出（用于：预取中勿把播放钮打成 loading） */
+  isAudible(): boolean {
+    return this.outputActive && !!this.lastTempPath && this.highlightPauseAt <= 0;
+  }
+
   /** ±毫秒快进/快退（跨句）；连点排队，用最新进度累加 */
-  seekBy(deltaMs: number): void {
-    void this.enqueueSeek(async () => {
+  seekBy(deltaMs: number): Promise<void> {
+    return this.enqueueSeek(async () => {
       const { positionMs } = this.getProgress();
       await this.seekToUnlocked(positionMs + deltaMs);
     });
@@ -528,10 +562,11 @@ class TtsPlayer {
     const { index, offsetMs } = locateSpeechOffset(durs, target);
     const sameClip = index === this.sentenceIndex;
 
-    // 同长片段内优先 bgm.seek，避免重合成；偏移已近段末则落到下一段
+    // 同段且落在真实音频长度内：直接 seek，不停播、不 loading
+    // ponytail: 只用 bgm.duration，不用估算 clipDur（估算偏大时会误判同段）
     if (sameClip && this.clipKind === "unit" && this.bgm && this.lastTempPath) {
-      const clipDur = Math.max(this.durationAt(index), 1);
-      if (offsetMs < clipDur - 80) {
+      const mediaMs = Math.round((Number(this.bgm.duration) || 0) * 1000);
+      if (mediaMs > 0 && offsetMs < mediaMs - 50) {
         try {
           this.bgm.seek(offsetMs / 1000);
           this.clipOriginMs = offsetMs;
@@ -539,16 +574,24 @@ class TtsPlayer {
           this.highlightPausedMs = 0;
           this.highlightPauseAt = 0;
           this.emitHighlight(offsetMs);
+          if (!this.isAudible()) {
+            this.outputActive = true;
+            try {
+              this.bgm.play();
+            } catch {
+              // ignore
+            }
+            this.onPlay?.();
+          }
           return;
         } catch {
-          // fall through：部分机型 seek 失败则重开播
+          // fall through
         }
       }
     }
 
     this.sentenceIndex = index;
     this.pendingStartMs = offsetMs;
-    // 段内绝对偏移只能走长片段；短句轨上 bgm.seek 坐标系不对
     this.pendingPartIndex = null;
     await this.playCurrent();
   }
@@ -638,6 +681,7 @@ class TtsPlayer {
   }
 
   pause(): void {
+    this.outputActive = false;
     this.pauseHighlightTick();
     try {
       this.ensureBgm().pause();
@@ -649,6 +693,7 @@ class TtsPlayer {
   resume(): void {
     try {
       this.expectingPlayback = true;
+      this.outputActive = true;
       this.ensureBgm().play();
       this.startHighlightTick(false);
     } catch {
@@ -661,6 +706,8 @@ class TtsPlayer {
     this.srcGen = -1;
     this.abortAllSpeech();
     this.expectingPlayback = false;
+    this.outputActive = false;
+    this.suppressPauseEvent = false;
     this.clearPlayWatchdog();
     this.clearPrefetchTimer();
     this.stopHighlightTick();
@@ -935,6 +982,8 @@ class TtsPlayer {
       this.removeTemp(path);
     }
     this.fileCache.clear();
+    // 顺带清历史随机名残留，避免下次一写就爆盘
+    this.sweepOrphanTtsFiles(new Set());
   }
 
   /** 取消进行中的 timed（保留已完成缓存）；切句连点时先打断上一次 */
@@ -1057,11 +1106,74 @@ class TtsPlayer {
     }
   }
 
-  private writeTempMp3(buf: ArrayBuffer): string {
+  /** 扫掉 USER_DATA_PATH 里未在保活集合中的 tts-*.mp3（含历史随机名残留） */
+  private sweepOrphanTtsFiles(keepPaths: Set<string>): void {
+    const base = userDataPath();
+    if (!base) return;
+    const fs = uni.getFileSystemManager();
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(base) as string[];
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (!/^tts-.*\.mp3$/i.test(name)) continue;
+      const path = `${base}/${name}`;
+      if (keepPaths.has(path)) continue;
+      try {
+        fs.unlinkSync(path);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  /** 磁盘吃紧：丢掉未在播文件 + 扫孤儿；保留当前播放路径 */
+  private reclaimTtsDisk(): void {
+    const keep = new Set<string>();
+    if (this.lastTempPath) keep.add(this.lastTempPath);
+    for (const [key, path] of [...this.fileCache.entries()]) {
+      if (path === this.lastTempPath) continue;
+      this.fileCache.delete(key);
+      this.speechCache.delete(key);
+      this.removeTemp(path);
+    }
+    this.sweepOrphanTtsFiles(keep);
+  }
+
+  private evictFileCacheExcept(keepKey: string): void {
+    if (this.fileCache.size < MAX_TTS_FILES) return;
+    for (const [key, path] of [...this.fileCache.entries()]) {
+      if (this.fileCache.size < MAX_TTS_FILES) break;
+      if (key === keepKey || path === this.lastTempPath) continue;
+      this.fileCache.delete(key);
+      this.speechCache.delete(key);
+      this.removeTemp(path);
+    }
+  }
+
+  private writeTempMp3(buf: ArrayBuffer, key: string): string {
     const base = userDataPath();
     if (!base) throw new Error("无可用本地路径");
-    const filePath = `${base}/tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp3`;
-    uni.getFileSystemManager().writeFileSync(filePath, buf);
+    const filePath = `${base}/${ttsFileNameForKey(key)}`;
+    const fs = uni.getFileSystemManager();
+    const write = () => fs.writeFileSync(filePath, buf);
+    try {
+      this.evictFileCacheExcept(key);
+      write();
+    } catch (err) {
+      if (!isStorageFullError(err)) throw err;
+      this.reclaimTtsDisk();
+      try {
+        write();
+      } catch (retryErr) {
+        if (isStorageFullError(retryErr)) {
+          throw new Error("本地缓存已满，请清理微信小程序缓存后重试");
+        }
+        throw retryErr;
+      }
+    }
     return filePath;
   }
 
@@ -1075,20 +1187,22 @@ class TtsPlayer {
     if (!speech) return null;
     const hit = this.fileCache.get(key);
     if (hit) return { path: hit, boundaries: speech.boundaries };
-    const filePath = this.writeTempMp3(speech.audio);
+    const filePath = this.writeTempMp3(speech.audio, key);
     this.fileCache.set(key, filePath);
     return { path: filePath, boundaries: speech.boundaries };
   }
 
   private async playCurrent(): Promise<void> {
+    const stillAudible = this.isAudible();
     const gen = ++this.playGen;
+    // 上一轮等合成被取消时，清掉 suppress，本轮若仍需等待再设回
+    this.suppressPauseEvent = false;
     this.stopHighlightTick();
     const sentence = this.sentences[this.sentenceIndex];
     if (!sentence) {
       this.onChapterEnd?.();
       return;
     }
-    this.onWaiting?.();
 
     const startMsRaw = Math.max(0, this.pendingStartMs);
     this.pendingStartMs = 0;
@@ -1149,6 +1263,24 @@ class TtsPlayer {
       partOffset = 0;
     }
 
+    const targetKey = this.cacheKey(targetText);
+    // 本地已有音频/合成结果：继续播旧声直到换源，不 loading
+    // 必须等 timed：停声 + loading（预取不走 playCurrent）
+    const hasLocal = this.fileCache.has(targetKey) || this.speechCache.has(targetKey);
+    if (!hasLocal) {
+      // 保持 suppress 直到 markPlaying，避免异步 onPause 把 UI 打成暂停键
+      this.suppressPauseEvent = true;
+      this.outputActive = false;
+      this.onWaiting?.();
+      if (stillAudible || this.lastTempPath) {
+        try {
+          this.ensureBgm().pause();
+        } catch {
+          // ignore
+        }
+      }
+    }
+
     this.clipKind = kind;
     this.clipPartIndex = partIdx;
     this.boundaryUnit = mapUnit;
@@ -1177,6 +1309,7 @@ class TtsPlayer {
       const prepared = await this.prepareFile(targetText, gen);
       if (gen !== this.playGen) return;
       if (!prepared) {
+        this.suppressPauseEvent = false;
         const msg = this.lastSynthError || "语音合成失败";
         if (!/取消/.test(msg)) this.onError?.(msg);
         return;
@@ -1223,6 +1356,7 @@ class TtsPlayer {
       // 预取改到 markPlaying（真正开始播放）后再触发
     } catch (err) {
       if (gen !== this.playGen) return;
+      this.suppressPauseEvent = false;
       const msg = err instanceof Error ? err.message : "";
       if (/取消/.test(msg)) return;
       this.onError?.(msg || this.lastSynthError || "语音合成失败");

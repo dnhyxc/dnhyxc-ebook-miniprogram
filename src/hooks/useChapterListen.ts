@@ -196,6 +196,7 @@ async function loadAndPlayChapter(
     onWaiting: () => {
       if (gen !== sessionGen) return;
       if (status.value === "idle") return;
+      // seek/切句/起播等阻塞等待：必须转圈（预取不会走 onWaiting）
       status.value = "loading";
     },
     onPlay: () => {
@@ -206,9 +207,9 @@ async function loadAndPlayChapter(
     },
     onPause: () => {
       if (gen !== sessionGen) return;
-      if (status.value === "playing" || status.value === "loading") {
-        status.value = "paused";
-      }
+      // 等 timed 时 bgm.pause 会异步打到这里，不能把 loading 盖成 paused
+      if (status.value === "loading" || status.value === "idle") return;
+      if (status.value === "playing") status.value = "paused";
       syncListenProgress();
     },
   });
@@ -346,7 +347,9 @@ export function seekListenSentence(
 /** 章内快进/快退（毫秒，微信听书 ±15s） */
 export function seekListenBy(deltaMs: number): void {
   if (status.value === "idle") return;
-  ttsPlayer.seekBy(deltaMs);
+  void ttsPlayer.seekBy(deltaMs).then(() => {
+    syncListenProgress();
+  });
   syncListenProgress();
   startProgressTimer();
 }
@@ -354,7 +357,10 @@ export function seekListenBy(deltaMs: number): void {
 /** 拖到章内绝对时间位置 */
 export function seekListenTo(ms: number): void {
   if (status.value === "idle") return;
-  void ttsPlayer.seekTo(ms);
+  // loading 只由 onWaiting 触发（等 timed 且无本地可播内容时）
+  void ttsPlayer.seekTo(ms).then(() => {
+    syncListenProgress();
+  });
   syncListenProgress();
   startProgressTimer();
 }

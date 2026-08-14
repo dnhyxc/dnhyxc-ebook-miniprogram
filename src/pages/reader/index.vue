@@ -75,6 +75,7 @@
                 :scroll-table="false"
                 :selectable="false"
                 :use-anchor="false"
+                @linktap="onListenHighlightLinkTap"
               />
             </view>
           </template>
@@ -353,6 +354,7 @@ import { resolveUploadFileUrl } from "@/utils/upload-file-url";
 import {
   buildChapterHtmlSegments,
   injectListenSentenceHighlight,
+  LISTEN_HL_HREF,
   segmentIndexForChar,
   type ChapterHtmlSegment,
 } from "@/utils/listen-text";
@@ -494,6 +496,8 @@ const {
   startListen,
   seekListenChapter,
   seekListenSentence,
+  pauseListen,
+  resumeListen,
   stopListen,
   stopListenIfLeavingReader,
 } = useChapterListen();
@@ -563,6 +567,14 @@ function onReaderContentTouchStart() {
   releaseChromeScrollGuard();
 }
 
+/** 黄底 <a @tap.stop>：点击范围即高亮文字，优先于藏底栏 */
+function onListenHighlightLinkTap(e: { href?: string }) {
+  if (e?.href !== LISTEN_HL_HREF) return;
+  if (listenStatus.value === "loading") return;
+  if (listenStatus.value === "paused") resumeListen();
+  else if (listenStatus.value === "playing") pauseListen();
+}
+
 watch(listenActive, (active) => {
   if (active) {
     // 目录 tocSplit 会挡住听书分段 mp-html，起播前清掉
@@ -577,17 +589,18 @@ watch(listenActive, (active) => {
   }
 });
 
-// 句级高亮随 WordBoundary 进度切换；阅读页隐藏时不 setData，避免微信 __subPageFrameEndTime__ 报错
+// 句级高亮随 WordBoundary 进度切换；暂停态换暗底；阅读页隐藏时不 setData
 watch(
   () =>
     [
       listenActive.value,
+      listenStatus.value,
       listenChapterIndex.value,
       listenHighlightSpan.value?.start,
       listenHighlightSpan.value?.end,
       readerPageVisible.value,
     ] as const,
-  ([active, , , , visible]) => {
+  ([active, , , , , visible]) => {
     if (!active || !visible) return;
     void nextTick(() => applyListenSentenceHighlight());
   },
@@ -665,10 +678,17 @@ let listenHlChap = -1;
 let listenHlSeg = -1;
 
 function listenHighlightMarkStyle(): string {
-  // 深浅纸张都能看见的半透明琥珀底
-  return isDarkPaper.value
-    ? "background-color:rgba(255,193,7,0.32);border-radius:2px;color:inherit"
-    : "background-color:rgba(255,193,7,0.45);border-radius:2px;color:inherit";
+  // 播放：亮琥珀；暂停：压暗。压过 mp-html ._a 默认链色
+  const paused = listenStatus.value === "paused";
+  const bg = isDarkPaper.value
+    ? paused
+      ? "rgba(120,90,0,0.42)"
+      : "rgba(255,193,7,0.32)"
+    : paused
+      ? "rgba(140,105,0,0.48)"
+      : "rgba(255,193,7,0.45)";
+  // 保持 inline（勿 inline-block）：黄底只裹文字，不铺满行尾空白
+  return `background-color:${bg};border-radius:2px;color:inherit;text-decoration:none;box-decoration-break:clone;-webkit-box-decoration-break:clone`;
 }
 
 function setListenSegContent(chap: number, si: number, html: string) {

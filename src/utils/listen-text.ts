@@ -690,9 +690,70 @@ export function sentenceIndexAtScrollPercent(
   return sentenceIndexAtPlainOffset(list, p * plainEnd);
 }
 
-/** 听书句级高亮：成对去掉 data-listen-hl 包裹（用 span，mp-html 信任标签） */
+/**
+ * 听书高亮可点：mp-html 对 <a> 用 @tap.stop，点击范围=黄底本身。
+ * listen-hl:// + copy-link=false，不走锚点、不跳转。
+ */
+export const LISTEN_HL_HREF = "listen-hl://toggle";
+
+/** 听书句级高亮：成对去掉 data-listen-hl 包裹（a/span） */
 export function stripListenHighlight(html: string): string {
-  return html.replace(/<span\s+[^>]*data-listen-hl="1"[^>]*>([\s\S]*?)<\/span>/gi, "$1");
+  return html.replace(
+    /<(?:a|span)\s+[^>]*data-listen-hl="1"[^>]*>([\s\S]*?)<\/(?:a|span)>/gi,
+    "$1",
+  );
+}
+
+/**
+ * 段内当前句热区（相对段高的 top/height 比例）。
+ * 严格按句在段内的字符起止比例，不再放大，避免点到黄底外也暂停。
+ */
+export function listenSentenceHitBandFrac(
+  segStart: number,
+  segEnd: number,
+  sentStart: number,
+  sentEnd: number,
+): { topFrac: number; heightFrac: number } | null {
+  const span = Math.max(segEnd - segStart, 1);
+  const startFrac = Math.min(1, Math.max(0, (sentStart - segStart) / span));
+  const endFrac = Math.min(1, Math.max(startFrac + 1 / span, (sentEnd - segStart) / span));
+  const topFrac = startFrac;
+  const heightFrac = Math.max(endFrac - startFrac, 1 / span);
+  return { topFrac, heightFrac };
+}
+
+/** 像素带：有 segH 时由 frac 换算 */
+export function listenSentenceHitBandY(
+  segStart: number,
+  segEnd: number,
+  sentStart: number,
+  sentEnd: number,
+  segH: number,
+): { top: number; bottom: number } | null {
+  if (segH < 20) return null;
+  const frac = listenSentenceHitBandFrac(segStart, segEnd, sentStart, sentEnd);
+  if (!frac) return null;
+  return { top: frac.topFrac * segH, bottom: (frac.topFrac + frac.heightFrac) * segH };
+}
+
+/** 从 HTML 纯文本起点起消费 plainLen 个字符，返回对应源码 end 下标 */
+export function extendPlainRangeInHtml(html: string, start: number, plainLen: number): number {
+  if (plainLen <= 0) return start;
+  let left = plainLen;
+  let i = start;
+  while (i < html.length && left > 0) {
+    if (html[i] === "<") {
+      const gt = html.indexOf(">", i);
+      if (gt < 0) break;
+      i = gt + 1;
+      continue;
+    }
+    const ent = matchEntityAt(html, i);
+    const step = ent ? ent.len : 1;
+    left -= 1;
+    i += step;
+  }
+  return i;
 }
 
 function matchEntityAt(html: string, i: number): { out: string; len: number } | null {
@@ -815,30 +876,38 @@ export function injectListenSentenceHighlight(
   // 句子为空则直接返回处理后原文
   if (!needle) return cleaned;
 
-  // 在 HTML 纯文本中查找目标句子范围（精确查找）
+  // 精确匹配整句；失败则用前缀定位起点，再按整句字数延展（避免黄底只有前缀、热区却按整句）
   let range = findPlainRangeInHtml(cleaned, needle);
-  // 如果精确找不到，且句子较长，尝试用前 24 个字符宽松匹配
   if (!range && needle.length > 24) {
-    range = findPlainRangeInHtml(cleaned, needle.slice(0, 24));
+    const prefix = findPlainRangeInHtml(cleaned, needle.slice(0, 24));
+    if (prefix) {
+      range = {
+        start: prefix.start,
+        end: extendPlainRangeInHtml(cleaned, prefix.start, needle.length),
+      };
+    }
   }
-  // 若依然找不到，再尝试前 12 个字符
   if (!range && needle.length > 12) {
-    range = findPlainRangeInHtml(cleaned, needle.slice(0, 12));
+    const prefix = findPlainRangeInHtml(cleaned, needle.slice(0, 12));
+    if (prefix) {
+      range = {
+        start: prefix.start,
+        end: extendPlainRangeInHtml(cleaned, prefix.start, needle.length),
+      };
+    }
   }
-  // 若最终都未找到匹配，返回清理后的原 HTML
   if (!range) return cleaned;
 
   // style 属性仅允许安全字符，移除引号和尖括号防止属性异常
   const safeStyle = markStyle.replace(/["<>]/g, "");
-  // 构造带高亮标记的 <span> 标签
-  const open = `<span data-listen-hl="1" style="${safeStyle}">`;
-  const close = "</span>";
-  // 将目标区间用 <span> 包起来并拼接，其余部分保持原样
+  // <a> 点击盒=黄底文字，避免透明热区比黄底更大
+  const open = `<a href="${LISTEN_HL_HREF}" data-listen-hl="1" style="${safeStyle}">`;
+  const close = "</a>";
   return (
-    cleaned.slice(0, range.start) + // 目标前内容
-    open + // 打开 span 标签
-    cleaned.slice(range.start, range.end) + // 目标区间（需高亮）
-    close + // 关闭 span
-    cleaned.slice(range.end) // 目标后内容
+    cleaned.slice(0, range.start) +
+    open +
+    cleaned.slice(range.start, range.end) +
+    close +
+    cleaned.slice(range.end)
   );
 }
