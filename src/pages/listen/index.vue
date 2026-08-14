@@ -187,7 +187,7 @@
             <view class="voice-drawer__handle" @tap="closeRateDrawer">
               <view class="voice-drawer__handle-bar" />
             </view>
-            <text class="voice-drawer__title">语速111</text>
+            <text class="voice-drawer__title">语速</text>
             <!-- 滑动中只改展示；停稳/点预设后 emit → 实时改播放倍速 -->
             <ListenRatePicker
               :model-value="rate"

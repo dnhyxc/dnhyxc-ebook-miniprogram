@@ -233,8 +233,9 @@ class TtsPlayer {
   private preferShort = false;
   /** 当前句高亮时钟起点（句内 offset） */
   private clipOriginMs = 0;
-  /** 串行化 ±/拖拽 seek，避免连点打断合成后误报失败 */
-  private seekQueue: Promise<void> = Promise.resolve();
+  /** 最新 seek 目标；连拖时只落地最后一次，中间请求立刻 abort */
+  private pendingSeekMs: number | null = null;
+  private seekDrain: Promise<void> | null = null;
   private prefetchTimer: ReturnType<typeof setTimeout> | null = null;
   /** 上下句连点合并：只对停稳后的目标打一次 timed */
   private skipDelta = 0;
@@ -579,26 +580,39 @@ class TtsPlayer {
     return this.outputActive && !!this.lastTempPath && this.highlightPauseAt <= 0;
   }
 
-  /** ±毫秒快进/快退（跨句）；连点排队，用最新进度累加 */
+  /** ±毫秒快进/快退（跨句）；连点合并到最新目标 */
   seekBy(deltaMs: number): Promise<void> {
-    return this.enqueueSeek(async () => {
-      const { positionMs } = this.getProgress();
-      await this.seekToUnlocked(positionMs + deltaMs);
-    });
+    const base = this.pendingSeekMs ?? this.getProgress().positionMs;
+    return this.seekTo(base + deltaMs);
   }
 
-  /** 跳到章内绝对时间 */
+  /** 跳到章内绝对时间；loading 中再次拖动会立刻取消上一次 timed，只合成最新点 */
   seekTo(positionMs: number): Promise<void> {
-    return this.enqueueSeek(() => this.seekToUnlocked(positionMs));
+    this.pendingSeekMs = positionMs;
+    // 立刻作废当前 playCurrent / timed，不等上一段跑完
+    this.playGen += 1;
+    this.clearPrefetchTimer();
+    this.clearPlayWatchdog();
+    this.expectingPlayback = false;
+    for (const job of this.jobs.values()) {
+      job.req.abort();
+    }
+    this.jobs.clear();
+
+    if (!this.seekDrain) {
+      this.seekDrain = this.drainSeeks().finally(() => {
+        this.seekDrain = null;
+      });
+    }
+    return this.seekDrain;
   }
 
-  private enqueueSeek(task: () => Promise<void>): Promise<void> {
-    const run = this.seekQueue.then(task, task);
-    this.seekQueue = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
+  private async drainSeeks(): Promise<void> {
+    while (this.pendingSeekMs != null) {
+      const ms = this.pendingSeekMs;
+      this.pendingSeekMs = null;
+      await this.seekToUnlocked(ms);
+    }
   }
 
   private async seekToUnlocked(positionMs: number): Promise<void> {
@@ -621,17 +635,17 @@ class TtsPlayer {
           this.highlightStartedAt = Date.now() - offsetMs;
           this.highlightPausedMs = 0;
           this.highlightPauseAt = 0;
+          this.buffering = false;
           this.emitHighlight(offsetMs);
           if (!this.isAudible()) {
-            this.intent = "run";
             this.outputActive = true;
             try {
               this.bgm.play();
             } catch {
               // ignore
             }
-            this.onPlay?.();
           }
+          this.onPlay?.();
           return;
         } catch {
           // fall through

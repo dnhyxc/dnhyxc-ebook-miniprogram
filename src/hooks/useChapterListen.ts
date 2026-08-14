@@ -340,24 +340,25 @@ export function seekListenSentence(
   syncListenProgress();
 }
 
-/** 章内快进/快退（毫秒，微信听书 ±15s） */
-export function seekListenBy(deltaMs: number): void {
-  if (status.value === "idle") return;
-  void ttsPlayer.seekBy(deltaMs).then(() => {
-    syncListenProgress();
-  });
-  syncListenProgress();
-  startProgressTimer();
-}
-
 /** 拖到章内绝对时间位置 */
 export function seekListenTo(ms: number): void {
   if (status.value === "idle") return;
-  // loading 只由 onWaiting 触发（等 timed 且无本地可播内容时）
+  // 进度条立刻跟手；合成目标以最后一次为准（player 会 abort 上一次 timed）
+  positionMs.value = Math.max(0, ms);
   void ttsPlayer.seekTo(ms).then(() => {
     syncListenProgress();
   });
-  syncListenProgress();
+  startProgressTimer();
+}
+
+/** 章内快进/快退（毫秒，微信听书 ±15s） */
+export function seekListenBy(deltaMs: number): void {
+  if (status.value === "idle") return;
+  const next = Math.max(0, positionMs.value + deltaMs);
+  positionMs.value = next;
+  void ttsPlayer.seekTo(next).then(() => {
+    syncListenProgress();
+  });
   startProgressTimer();
 }
 
