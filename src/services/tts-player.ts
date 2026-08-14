@@ -173,11 +173,18 @@ class TtsPlayer {
   private lastTempPath = "";
   /** 当前 bgm.src 对应的 playGen；用于忽略解锁静音 / 被取消音频的 onEnded */
   private srcGen = -1;
+  /**
+   * 播放意图（与 UI 对齐的唯一真相）：
+   * - run：要出声（合成中 / 播放中）
+   * - hold：用户或系统暂停
+   */
+  private intent: "run" | "hold" = "hold";
+  /** 正在等 timed/写盘：此间 bgm 事件不得把 UI 打成 paused */
+  private buffering = false;
+  /** 已挂上新 src、等 onPlay；此间忽略 pause */
   private expectingPlayback = false;
-  /** 当前是否有可听输出（出声中）；预取 timed 不得据此把 UI 打成 loading */
+  /** 当前是否有可听输出 */
   private outputActive = false;
-  /** playCurrent 换源前主动 pause 时，勿把 UI 打成 paused */
-  private suppressPauseEvent = false;
   private playWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private highlightTimer: ReturnType<typeof setInterval> | null = null;
   private highlightStartedAt = 0;
@@ -366,15 +373,16 @@ class TtsPlayer {
 
   private markPlaying(gen: number): void {
     if (gen !== this.playGen) return;
+    if (this.intent !== "run") return;
+    // 还在等 timed/写盘：绝不能切 playing（微信 stop 后仍可能冒出 onPlay/timeUpdate）
+    if (this.buffering) return;
     if (this.playedGen === gen) return;
     this.playedGen = gen;
     this.expectingPlayback = false;
     this.outputActive = true;
-    this.suppressPauseEvent = false;
     this.clearPlayWatchdog();
     this.startHighlightTick(true);
     this.onPlay?.();
-    // 首句真正出声后再预取，避免起播/切章/改倍速连打两次 timed
     this.schedulePrefetch(this.sentenceIndex);
   }
 
@@ -384,8 +392,30 @@ class TtsPlayer {
       this.playWatchdogTimer = null;
       if (gen !== this.playGen) return;
       if (this.playedGen === gen) return;
+      // 仅已挂 src、仍在等出声时兜底
+      if (!this.expectingPlayback || this.buffering) return;
       this.markPlaying(gen);
     }, 800);
+  }
+
+  /** 需要等合成：loading + 停掉旧声。用 stop 而非 pause，避免微信异步 onPause 污染 UI */
+  private beginBuffering(): void {
+    this.intent = "run";
+    this.buffering = true;
+    this.expectingPlayback = false;
+    this.outputActive = false;
+    this.clearPlayWatchdog();
+    this.pauseHighlightTick();
+    this.onWaiting?.();
+    // 防止旧音频 onEnded 误切下一句
+    this.srcGen = -1;
+    if (this.bgm) {
+      try {
+        this.bgm.stop();
+      } catch {
+        // ignore
+      }
+    }
   }
 
   private ensureBgm(): UniApp.BackgroundAudioManager {
@@ -395,26 +425,39 @@ class TtsPlayer {
       bgm.onEnded(() => {
         this.stopHighlightTick();
         this.outputActive = false;
+        if (this.intent !== "run") return;
+        if (this.buffering || this.expectingPlayback) return;
         // 忽略解锁静音 / stop 后旧音频尾巴，避免切章时 playNext 跳过句首
         if (this.srcGen !== this.playGen || !this.lastTempPath) return;
         void this.playNext();
       });
       bgm.onPlay(() => {
-        if (this.expectingPlayback) this.markPlaying(this.playGen);
-        else if (this.sentences[this.sentenceIndex] && this.highlightTimer == null) {
+        if (this.intent !== "run") return;
+        // 只有已挂上目标 src 后才认作出声；buffering 期间的 play 事件一律忽略
+        if (this.expectingPlayback) {
+          this.markPlaying(this.playGen);
+        } else if (
+          !this.buffering &&
+          this.sentences[this.sentenceIndex] &&
+          this.highlightTimer == null
+        ) {
           this.startHighlightTick(false);
         }
       });
       bgm.onPause(() => {
-        this.expectingPlayback = false;
-        this.clearPlayWatchdog();
-        this.pauseHighlightTick();
-        // 等合成时主动 pause：整段等待期都吞掉 onPause（微信常异步回调）
-        if (this.suppressPauseEvent) return;
+        // 缓冲 / 挂 src 过程中的 pause/stop 副作用：一律忽略
+        if (this.buffering || this.expectingPlayback) return;
         this.outputActive = false;
+        this.pauseHighlightTick();
+        this.clearPlayWatchdog();
+        // 用户 pause() 已发过 onPause；此处只处理系统播控条打断
+        if (this.intent === "hold") return;
+        this.intent = "hold";
         this.onPause?.();
       });
       bgm.onStop(() => {
+        // stop 用于缓冲清旧声，不驱动 UI
+        if (this.buffering || this.expectingPlayback) return;
         this.expectingPlayback = false;
         this.outputActive = false;
         this.clearPlayWatchdog();
@@ -427,6 +470,10 @@ class TtsPlayer {
         this.nextSentence();
       });
       bgm.onTimeUpdate(() => {
+        // 仅「已换源、等出声」时用进度兜底；buffering 时旧进度绝不能变成 playing
+        if (this.expectingPlayback) {
+          this.markPlaying(this.playGen);
+        }
         this.tickHighlight();
       });
       bgm.onError(() => undefined);
@@ -556,6 +603,7 @@ class TtsPlayer {
 
   private async seekToUnlocked(positionMs: number): Promise<void> {
     if (!this.sentences.length) return;
+    this.intent = "run";
     const durs = this.sentences.map((_, i) => this.durationAt(i));
     const total = durs.reduce((a, b) => a + b, 0);
     const target = Math.max(0, Math.min(positionMs, Math.max(total - 1, 0)));
@@ -575,6 +623,7 @@ class TtsPlayer {
           this.highlightPauseAt = 0;
           this.emitHighlight(offsetMs);
           if (!this.isAudible()) {
+            this.intent = "run";
             this.outputActive = true;
             try {
               this.bgm.play();
@@ -669,6 +718,7 @@ class TtsPlayer {
       this.onChapterEnd?.();
       return;
     }
+    this.intent = "run";
     this.sentenceIndex = Math.max(0, Math.min(index, this.sentences.length - 1));
     this.pendingStartMs = 0;
     const unit = this.sentences[this.sentenceIndex];
@@ -681,8 +731,13 @@ class TtsPlayer {
   }
 
   pause(): void {
+    this.intent = "hold";
+    this.buffering = false;
+    this.expectingPlayback = false;
     this.outputActive = false;
+    this.clearPlayWatchdog();
     this.pauseHighlightTick();
+    this.onPause?.();
     try {
       this.ensureBgm().pause();
     } catch {
@@ -691,9 +746,12 @@ class TtsPlayer {
   }
 
   resume(): void {
+    this.intent = "run";
+    this.buffering = false;
+    this.expectingPlayback = true;
+    this.outputActive = true;
+    this.onPlay?.();
     try {
-      this.expectingPlayback = true;
-      this.outputActive = true;
       this.ensureBgm().play();
       this.startHighlightTick(false);
     } catch {
@@ -705,9 +763,10 @@ class TtsPlayer {
     this.playGen += 1;
     this.srcGen = -1;
     this.abortAllSpeech();
+    this.intent = "hold";
+    this.buffering = false;
     this.expectingPlayback = false;
     this.outputActive = false;
-    this.suppressPauseEvent = false;
     this.clearPlayWatchdog();
     this.clearPrefetchTimer();
     this.stopHighlightTick();
@@ -1195,8 +1254,7 @@ class TtsPlayer {
   private async playCurrent(): Promise<void> {
     const stillAudible = this.isAudible();
     const gen = ++this.playGen;
-    // 上一轮等合成被取消时，清掉 suppress，本轮若仍需等待再设回
-    this.suppressPauseEvent = false;
+    this.intent = "run";
     this.stopHighlightTick();
     const sentence = this.sentences[this.sentenceIndex];
     if (!sentence) {
@@ -1264,20 +1322,16 @@ class TtsPlayer {
     }
 
     const targetKey = this.cacheKey(targetText);
-    // 本地已有音频/合成结果：继续播旧声直到换源，不 loading
-    // 必须等 timed：停声 + loading（预取不走 playCurrent）
+    // 仅 file/speech 算可播；jobs 里进行中仍要 loading
     const hasLocal = this.fileCache.has(targetKey) || this.speechCache.has(targetKey);
     if (!hasLocal) {
-      // 保持 suppress 直到 markPlaying，避免异步 onPause 把 UI 打成暂停键
-      this.suppressPauseEvent = true;
-      this.outputActive = false;
-      this.onWaiting?.();
-      if (stillAudible || this.lastTempPath) {
-        try {
-          this.ensureBgm().pause();
-        } catch {
-          // ignore
-        }
+      this.beginBuffering();
+    } else {
+      this.buffering = false;
+      if (!stillAudible) {
+        // 有缓存但当前没在出声（暂停后 seek 等）：先 loading，出声后再 playing
+        this.expectingPlayback = false;
+        this.onWaiting?.();
       }
     }
 
@@ -1301,15 +1355,19 @@ class TtsPlayer {
     this.clearPrefetchTimer();
 
     const bgm = this.ensureBgm();
-    this.expectingPlayback = false;
-    this.clearPlayWatchdog();
+    if (!this.buffering) {
+      this.expectingPlayback = false;
+      this.clearPlayWatchdog();
+    }
 
     try {
       this.lastSynthError = "";
       const prepared = await this.prepareFile(targetText, gen);
       if (gen !== this.playGen) return;
+      if (this.intent !== "run") return;
       if (!prepared) {
-        this.suppressPauseEvent = false;
+        this.buffering = false;
+        this.expectingPlayback = false;
         const msg = this.lastSynthError || "语音合成失败";
         if (!/取消/.test(msg)) this.onError?.(msg);
         return;
@@ -1337,7 +1395,9 @@ class TtsPlayer {
       this.srcGen = gen;
       this.applyBgmMeta(targetText || this.chapterTitle || "听书");
       this.applyPlaybackBoost();
+      // 先标 expecting，再清 buffering，避免中间态被旧事件误伤
       this.expectingPlayback = true;
+      this.buffering = false;
       this.armPlayWatchdog(gen);
       try {
         bgm.startTime = startMs / 1000;
@@ -1345,6 +1405,11 @@ class TtsPlayer {
         // ignore
       }
       bgm.src = prepared.path;
+      try {
+        bgm.play();
+      } catch {
+        // 部分端设 src 后自动播
+      }
       if (startMs > 0) {
         try {
           bgm.seek(startMs / 1000);
@@ -1353,10 +1418,10 @@ class TtsPlayer {
         }
       }
       this.emitHighlight(startMs);
-      // 预取改到 markPlaying（真正开始播放）后再触发
     } catch (err) {
       if (gen !== this.playGen) return;
-      this.suppressPauseEvent = false;
+      this.buffering = false;
+      this.expectingPlayback = false;
       const msg = err instanceof Error ? err.message : "";
       if (/取消/.test(msg)) return;
       this.onError?.(msg || this.lastSynthError || "语音合成失败");

@@ -196,7 +196,6 @@ async function loadAndPlayChapter(
     onWaiting: () => {
       if (gen !== sessionGen) return;
       if (status.value === "idle") return;
-      // seek/切句/起播等阻塞等待：必须转圈（预取不会走 onWaiting）
       status.value = "loading";
     },
     onPlay: () => {
@@ -207,9 +206,8 @@ async function loadAndPlayChapter(
     },
     onPause: () => {
       if (gen !== sessionGen) return;
-      // 等 timed 时 bgm.pause 会异步打到这里，不能把 loading 盖成 paused
-      if (status.value === "loading" || status.value === "idle") return;
-      if (status.value === "playing") status.value = "paused";
+      if (status.value === "idle") return;
+      status.value = "paused";
       syncListenProgress();
     },
   });
@@ -295,15 +293,13 @@ export async function seekListenChapter(
 }
 
 export function pauseListen(): void {
-  if (status.value !== "playing") return;
+  if (status.value !== "playing" && status.value !== "loading") return;
   ttsPlayer.pause();
-  status.value = "paused";
 }
 
 export function resumeListen(): void {
   if (status.value !== "paused") return;
   ttsPlayer.resume();
-  status.value = "playing";
 }
 
 export function togglePlayListen(): void {
