@@ -2,7 +2,8 @@
 
 > **状态**：已采纳  
 > **关联文件**：`src/services/tts-player.ts`、`src/hooks/useChapterListen.ts`、`src/pages/listen/index.vue`  
-> **来源会话**：[听书页双层文案](c3f8bd51-ec80-47b8-be74-2f558038843f)
+> **来源会话**：[听书页双层文案](c3f8bd51-ec80-47b8-be74-2f558038843f)  
+> **延伸阅读**：[reader-listen-play-status-machine-fix.md](./reader-listen-play-status-machine-fix.md)（播放状态机深度修复、seek 连拖合并、BGM 事件防护）
 
 ---
 
